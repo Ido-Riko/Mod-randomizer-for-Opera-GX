@@ -8,6 +8,7 @@
 // - Logs actions to console for debugging
 // THIS MUST BE AT THE TOP LEVEL (global scope)
 const port = chrome.runtime.connect({ name: 'popup' });
+const isSidebar = window.location.pathname.includes('sidebar.html');
 document.addEventListener('DOMContentLoaded', () => {
     const els = {
         profileSelect: document.getElementById('profileSelect'),
@@ -30,7 +31,6 @@ document.addEventListener('DOMContentLoaded', () => {
         reverseAllBtn: document.getElementById('reverseAllBtn')
 
 };
-
 
 
     // --- Port connection for robust messaging ---
@@ -676,9 +676,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     redirectTimeoutId = setTimeout(() => {
                         removeRedirectMessage();
                         chrome.tabs.create({ url: modToProcess.modsTabUrl });
-                        window.close();
+
+                        if (isSidebar) {
+                            // In sidebar mode, also clear the enabled message since window doesn't close
+                            clearEnabledMessage();
+                        } else {
+                            window.close();
+                        }
                     }, 3000);
-                } else {
+                }else {
                     // No redirect - just show the message
                     console.log('Mod enabled, no redirect (Open mods tab is OFF)');
                 }
@@ -775,7 +781,44 @@ document.addEventListener('DOMContentLoaded', () => {
             await maybeSend(minutes);
         }, 400);
     }
+    async function cleanupUndetectedMods() {
+        const resp = await sendMsg('getExtensions');
+        const detected = resp?.detectedModList || [];
+        const detectedIds = new Set(detected.map(d => d.id));
 
+        const st = await storageGet(['profilesOrder', 'profiles', 'knownDetectedIds']);
+        let changed = false;
+        // Only run if we detect a mismatch
+        const detectedCount = detected.length;
+        const storedCount = (st.knownDetectedIds || []).length;
+        if (detectedCount === storedCount) {
+            console.log('No cleanup needed');
+            return;
+        }
+        // Clean profilesOrder
+        const profilesOrder = st.profilesOrder || {};
+        for (const profileName of Object.keys(profilesOrder)) {
+            const before = profilesOrder[profileName].length;
+            profilesOrder[profileName] = profilesOrder[profileName].filter(id => detectedIds.has(id));
+            if (profilesOrder[profileName].length !== before) changed = true;
+        }
+
+        // Clean profiles
+        const profiles = st.profiles || {};
+        for (const profileName of Object.keys(profiles)) {
+            const before = profiles[profileName].length;
+            profiles[profileName] = profiles[profileName].filter(id => detectedIds.has(id));
+            if (profiles[profileName].length !== before) changed = true;
+        }
+
+        // Clean knownDetectedIds
+        const knownIds = (st.knownDetectedIds || []).filter(id => detectedIds.has(id));
+
+        if (changed || knownIds.length !== (st.knownDetectedIds || []).length) {
+            await storageSet({ profilesOrder, profiles, knownDetectedIds: knownIds });
+            console.log('Cleaned up undetected mod IDs from storage');
+        }
+    }
     async function onTimeUnitChange(evt) {
         const unitEl = evt?.target || els.timeUnit;
         if (!unitEl) return;
@@ -939,6 +982,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Continue normal popup open flow (this performs identification once)
         await sendMsg('popupOpened');
+        await cleanupUndetectedMods(); // Add this line
 
         // load toggles & time unit & time value
         const s = await storageGet([

@@ -36,8 +36,10 @@ body.light-mode {
 
 /* ===== Base Layout ===== */
 body {
-    width: 24rem;
+    width: 100%; /* instead of 24rem - sidebar controls width */
     margin: 0;
+    max-width: 400px; /* cap it */
+    min-height: 100vh; /* use full height */
     font-family: "Segoe UI", Arial, sans-serif;
     background-color: var(--bg);
     color: var(--text);
@@ -46,6 +48,8 @@ body {
 
 .popup-container {
     padding: 1rem;
+    min-height: 100vh; /* tall layout */
+
 }
 
 /* ===== Headings ===== */

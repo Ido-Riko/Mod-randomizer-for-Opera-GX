@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Mod Randomizer",
   "description": "Randomly enables a mod and disables other mods. Can automatically identify mods.",
-  "version": "6.3",
+  "version": "6.4",
   "permissions": [
     "management",
     "storage",
@@ -24,6 +24,16 @@
       "64": "icons/icon_64.png",
       "128": "icons/icon_128.png"
     }
+  },
+  "sidebar_action": {
+    "default_panel": "sidebar.html",
+    "default_icon": {
+      "18": "icons/icon_18.png",
+      "32": "icons/icon_32.png",
+      "64": "icons/icon_64.png",
+      "128": "icons/icon_128.png"
+    },
+    "default_title": "Mod Randomizer"
   },
   "icons": {
     "18": "icons/icon_18.png",
