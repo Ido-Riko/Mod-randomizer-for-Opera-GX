@@ -660,9 +660,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 chrome.management.uninstall(modToProcess.id, { showConfirmDialog: true }, () => {
                     if (chrome.runtime.lastError) {
                         console.log('Uninstall cancelled');
+                        // Clear message if uninstall was cancelled
+                        if (isSidebar) {
+                            setTimeout(() => {
+                                clearEnabledMessage();
+                            }, 500);
+                        }
                     } else {
                         console.log('Mod uninstalled, closing popup');
-                        window.close();
+                        if (isSidebar) {
+                            // Sidebar mode: just clear the message
+                            clearEnabledMessage();
+                        } else {
+                            window.close();
+                        }
                     }
                 });
             } else {
