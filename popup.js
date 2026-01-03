@@ -105,6 +105,7 @@ function customPrompt(message, defaultValue = '', title = 'Input') {
         placeholder: message
     }).then(result => result === null ? null : result);
 }
+
 const isSidebar = window.location.pathname.includes('sidebar.html');
 document.addEventListener('DOMContentLoaded', () => {
     const els = {
@@ -176,6 +177,233 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             resolve(res);
         }));
+// ===== Simplified Profile Import/Export Functions =====
+// Place these INSIDE DOMContentLoaded, after storageGet/storageSet definitions
+
+    /**
+     * Export all profiles to a JSON file
+     */
+    async function exportProfiles() {
+        try {
+            const s = await storageGet(['profiles', 'detectedModList']);
+            const profiles = s.profiles || {};
+            const detectedModList = s.detectedModList || [];
+
+            // Handle empty profiles case
+            if (Object.keys(profiles).length === 0) {
+                await customAlert('No profiles to export.', 'Export');
+                return;
+            }
+
+            // Build a map of mod ID to name for reference
+            const modIdToName = new Map(detectedModList.map(m => [m.id, m.name]));
+
+            // Create simple export data
+            const exportData = {
+                version: 1,
+                exportDate: new Date().toISOString(),
+                profiles: {}
+            };
+
+            // For each profile, store mods with both ID and name for resilience
+            for (const [profileName, modIds] of Object.entries(profiles)) {
+                exportData.profiles[profileName] = (modIds || []).map(id => ({
+                    id: id,
+                    name: modIdToName.get(id) || `Unknown (${id})`
+                }));
+            }
+
+            // Create and download the file
+            const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `mod-randomizer-profiles-${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            console.log('Profiles exported successfully');
+            await customAlert(`Exported ${Object.keys(profiles).length} profile(s)`, 'Export Successful');
+        } catch (err) {
+            console.error('Export error:', err);
+            await customAlert('Failed to export profiles: ' + err.message, 'Export Error');
+        }
+    }
+
+    /**
+     * Import profiles from a JSON file
+     */
+    async function importProfiles(file) {
+        try {
+            const text = await file.text();
+            const importData = JSON.parse(text);
+
+            if (!importData.profiles || typeof importData.profiles !== 'object') {
+                throw new Error('Invalid profile file format');
+            }
+
+            const s = await storageGet(['profiles', 'profilesOrder', 'detectedModList']);
+            const existingProfiles = s.profiles || {};
+            const existingOrder = s.profilesOrder || {};
+            const detectedModList = s.detectedModList || [];
+
+            // Build maps for matching
+            const modNameToId = new Map(detectedModList.map(m => [m.name.toLowerCase(), m.id]));
+            const detectedIds = new Set(detectedModList.map(m => m.id));
+
+            const results = {
+                imported: [],
+                skipped: [],
+                missingMods: {}
+            };
+
+            // Process each profile
+            for (const [profileName, modsArray] of Object.entries(importData.profiles)) {
+                // Check if profile already exists (case-insensitive)
+                const existingNames = Object.keys(existingProfiles).map(n => n.toLowerCase());
+                if (existingNames.includes(profileName.toLowerCase())) {
+                    results.skipped.push(profileName);
+                    continue;
+                }
+
+                // Handle empty profile
+                if (!modsArray || modsArray.length === 0) {
+                    existingProfiles[profileName] = [];
+                    existingOrder[profileName] = [];
+                    results.imported.push(profileName);
+                    continue;
+                }
+
+                const validModIds = [];
+                const missingMods = [];
+
+                // Match each mod - try ID first, then name
+                for (const mod of modsArray) {
+                    const modId = mod.id || mod;
+                    const modName = mod.name;
+
+                    if (detectedIds.has(modId)) {
+                        // Direct ID match
+                        validModIds.push(modId);
+                    } else if (modName) {
+                        // Try name match
+                        const matchedId = modNameToId.get(modName.toLowerCase());
+                        if (matchedId) {
+                            validModIds.push(matchedId);
+                        } else {
+                            missingMods.push(modName);
+                        }
+                    } else {
+                        missingMods.push(`Unknown (${modId})`);
+                    }
+                }
+
+                // Import profile (enabled mods are the valid ones we found)
+                existingProfiles[profileName] = validModIds;
+                existingOrder[profileName] = validModIds; // Same order
+
+                results.imported.push(profileName);
+                if (missingMods.length > 0) {
+                    results.missingMods[profileName] = missingMods;
+                }
+            }
+
+            // Save updated profiles
+            if (results.imported.length > 0) {
+                await storageSet({ profiles: existingProfiles, profilesOrder: existingOrder });
+                await loadAndRenderProfiles();
+                await renderExtensionList();
+            }
+
+            // Show results
+            await showImportResults(results);
+
+        } catch (err) {
+            console.error('Import error:', err);
+            await customAlert('Failed to import profiles: ' + err.message, 'Import Error');
+        }
+    }
+
+    /**
+     * Show detailed import results in a custom modal
+     */
+    async function showImportResults(results) {
+        const overlay = document.getElementById('modalOverlay');
+        const titleEl = document.getElementById('modalTitle');
+        const messageEl = document.getElementById('modalMessage');
+        const inputEl = document.getElementById('modalInput');
+        const buttonsEl = document.getElementById('modalButtons');
+
+        titleEl.textContent = 'Import Results';
+        inputEl.style.display = 'none';
+
+        // Build results HTML
+        let html = '<div class="import-results">';
+
+        if (results.imported.length > 0) {
+            html += '<h4>✓ Imported Profiles:</h4><ul>';
+            results.imported.forEach(name => {
+                html += `<li>${escapeHtml(name)}`;
+                if (results.missingMods[name]) {
+                    html += ` <span style="color: var(--highlight);">(${results.missingMods[name].length} mod(s) missing)</span>`;
+                }
+                html += '</li>';
+            });
+            html += '</ul>';
+
+            // Show missing mods details
+            const profilesWithMissing = Object.keys(results.missingMods);
+            if (profilesWithMissing.length > 0) {
+                html += '<div class="import-warning"><h4>⚠ Missing Mods:</h4>';
+                profilesWithMissing.forEach(profileName => {
+                    html += `<strong>${escapeHtml(profileName)}:</strong><ul>`;
+                    results.missingMods[profileName].forEach(modName => {
+                        html += `<li>${escapeHtml(modName)}</li>`;
+                    });
+                    html += '</ul>';
+                });
+                html += '<p>These mods were not found on your system and were excluded.</p></div>';
+            }
+        }
+
+        if (results.skipped.length > 0) {
+            html += '<h4>⊘ Skipped:</h4><ul>';
+            results.skipped.forEach(name => {
+                html += `<li>${escapeHtml(name)}</li>`;
+            });
+            html += '</ul>';
+            html += '<p class="import-warning">Profiles with these names already exist.</p>';
+        }
+
+        if (results.imported.length === 0 && results.skipped.length === 0) {
+            html += '<p class="import-warning">No profiles were imported.</p>';
+        } else if (results.imported.length > 0) {
+            html += `<p class="import-success">Successfully imported ${results.imported.length} profile(s)!</p>`;
+        }
+
+        html += '</div>';
+
+        messageEl.innerHTML = html;
+
+        // Create OK button
+        buttonsEl.innerHTML = '';
+        const okBtn = document.createElement('button');
+        okBtn.className = 'modal-btn modal-btn-primary';
+        okBtn.textContent = 'OK';
+        okBtn.onclick = () => overlay.classList.remove('active');
+        buttonsEl.appendChild(okBtn);
+
+        overlay.classList.add('active');
+        setTimeout(() => okBtn.focus(), 100);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
 
     // --- Formatting helpers for time units ---
     function toMinutes(value, unit) {
@@ -380,6 +608,35 @@ document.addEventListener('DOMContentLoaded', () => {
             await customAlert(r && r.message ? r.message : 'Delete failed');
         }
     });
+    // Add these event listeners in the DOMContentLoaded section of popup.js
+// (after the other profile button event listeners)
+
+// Export profiles button
+    const exportProfileBtn = document.getElementById('exportProfileBtn');
+    if (exportProfileBtn) {
+        exportProfileBtn.addEventListener('click', async () => {
+            await exportProfiles();
+        });
+    }
+
+// Import profiles button - triggers file input
+    const importProfileBtn = document.getElementById('importProfileBtn');
+    const importFileInput = document.getElementById('importFileInput');
+
+    if (importProfileBtn && importFileInput) {
+        importProfileBtn.addEventListener('click', () => {
+            importFileInput.click();
+        });
+
+        importFileInput.addEventListener('change', async (e) => {
+            const file = e.target.files?.[0];
+            if (file) {
+                await importProfiles(file);
+                // Clear the input so the same file can be imported again
+                importFileInput.value = '';
+            }
+        });
+    }
     // --- Extension / manual list rendering ---
     // We render items in the order defined in profilesOrder[active], then any enabled-but-not-in-order, then detected extras.
     async function renderExtensionList() {

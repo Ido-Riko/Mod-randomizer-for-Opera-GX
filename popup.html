@@ -14,6 +14,7 @@
 
     <form id="modForm">
         <!-- Profile Management Section -->
+        <!-- Replace the Profile Management Section in both popup.html and sidebar.html -->
         <fieldset class="profile-section">
             <legend>Profiles</legend>
             <select id="profileSelect">
@@ -23,6 +24,11 @@
                 <button type="button" id="newProfileBtn">+ New</button>
                 <button type="button" id="deleteProfileBtn">Delete</button>
             </div>
+            <div class="profile-actions">
+                <button type="button" id="exportProfileBtn">⬇ Export</button>
+                <button type="button" id="importProfileBtn">⬆ Import</button>
+            </div>
+            <input type="file" id="importFileInput" accept=".json">
         </fieldset>
 
         <!-- Randomize Button -->

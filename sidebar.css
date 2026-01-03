@@ -579,6 +579,83 @@ input:checked + .slider:before {
     background: transparent;
 }
 
+
+/* Add this to both popup.css and sidebar.css */
+
+/* Import/Export buttons row */
+.profile-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.profile-actions button {
+    flex: 1;
+    padding: 0.5rem;
+    font-size: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background-color: var(--bg-input);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.profile-actions button:hover {
+    background-color: var(--accent);
+    color: var(--accent-contrast);
+    border-color: var(--accent);
+}
+
+/* Hidden file input */
+#importFileInput {
+    display: none;
+}
+
+/* Disabled state for import/export buttons */
+.profile-section.disabled .profile-actions button {
+    pointer-events: none;
+    opacity: 0.5;
+}
+
+/* Import results modal styling */
+.import-results {
+    text-align: left;
+    margin: 1rem 0;
+    padding: 1rem;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+}
+
+.import-results h4 {
+    margin: 0 0 0.5rem 0;
+    color: var(--accent);
+    font-size: 1rem;
+}
+
+.import-results ul {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+}
+
+.import-results li {
+    margin: 0.25rem 0;
+    color: var(--text);
+    font-size: 0.9rem;
+}
+
+.import-warning {
+    color: var(--highlight);
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.import-success {
+    color: var(--success);
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+}
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar {
     width: 8px;
