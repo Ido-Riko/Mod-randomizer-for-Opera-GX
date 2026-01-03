@@ -529,11 +529,26 @@ input:checked + .slider:before {
     opacity: 0.6;
 }
 
+/* Background overlay - extends upward to cover legend */
+.profile-section.disabled::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -0.9em;  /* Extends upward to cover the legend text */
+    bottom: 0;
+    background: var(--overlay-bg);
+    pointer-events: auto;
+    border-radius: 8px;
+    z-index: 2;
+    cursor: not-allowed;
+}
+
+/* Text message overlay */
 .profile-section.disabled::after {
     content: "Randomize all mods is enabled";
     position: absolute;
     inset: 0;
-    background: var(--overlay-bg);
     color: var(--muted);
     font-size: 0.85rem;
     display: flex;
@@ -542,8 +557,9 @@ input:checked + .slider:before {
     text-align: center;
     pointer-events: auto;
     border-radius: 8px;
-    z-index: 2;
+    z-index: 3;  /* Above the ::before overlay */
     cursor: not-allowed;
+    background: transparent;  /* No background - that's handled by ::before */
 }
 
 .profile-section.disabled select,
@@ -552,6 +568,12 @@ input:checked + .slider:before {
     opacity: 0.5;
 }
 
+/* Keep legend above overlays */
+.profile-section legend {
+    position: relative;
+    z-index: 4;
+    background: transparent;
+}
 /* ===== Scrollbar ===== */
 ::-webkit-scrollbar {
     width: 8px;
