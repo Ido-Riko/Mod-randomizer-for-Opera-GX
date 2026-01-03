@@ -8,6 +8,103 @@
 // - Logs actions to console for debugging
 // THIS MUST BE AT THE TOP LEVEL (global scope)
 const port = chrome.runtime.connect({ name: 'popup' });
+// ===== Custom Modal Dialog System =====
+// These replace native alert/confirm/prompt for sidebar compatibility
+
+function showModal(title, message, buttons, inputConfig = null) {
+    return new Promise((resolve) => {
+        const overlay = document.getElementById('modalOverlay');
+        const titleEl = document.getElementById('modalTitle');
+        const messageEl = document.getElementById('modalMessage');
+        const inputEl = document.getElementById('modalInput');
+        const buttonsEl = document.getElementById('modalButtons');
+
+        titleEl.textContent = title;
+        messageEl.textContent = message;
+        buttonsEl.innerHTML = '';
+
+        // Handle input field
+        if (inputConfig) {
+            inputEl.style.display = 'block';
+            inputEl.value = inputConfig.defaultValue || '';
+            inputEl.placeholder = inputConfig.placeholder || '';
+            inputEl.focus();
+
+            // Allow Enter key to submit
+            const enterHandler = (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const btn = buttonsEl.querySelector('.modal-btn-primary');
+                    if (btn) btn.click();
+                }
+            };
+            inputEl.addEventListener('keydown', enterHandler);
+            inputEl._enterHandler = enterHandler;
+        } else {
+            inputEl.style.display = 'none';
+        }
+
+        // Create buttons
+        buttons.forEach(btn => {
+            const button = document.createElement('button');
+            button.className = `modal-btn ${btn.className || 'modal-btn-secondary'}`;
+            button.textContent = btn.text;
+            button.onclick = () => {
+                overlay.classList.remove('active');
+                if (inputEl._enterHandler) {
+                    inputEl.removeEventListener('keydown', inputEl._enterHandler);
+                    delete inputEl._enterHandler;
+                }
+                resolve(inputConfig ? inputEl.value : btn.value);
+            };
+            buttonsEl.appendChild(button);
+        });
+
+        overlay.classList.add('active');
+
+        // Focus input or first button
+        setTimeout(() => {
+            if (inputConfig) {
+                inputEl.focus();
+                inputEl.select();
+            } else {
+                const firstBtn = buttonsEl.querySelector('.modal-btn-primary') ||
+                    buttonsEl.querySelector('.modal-btn');
+                if (firstBtn) firstBtn.focus();
+            }
+        }, 100);
+    });
+}
+
+function customAlert(message, title = 'Notice') {
+    return showModal(title, message, [
+        { text: 'OK', className: 'modal-btn-primary', value: true }
+    ]);
+}
+
+function customConfirm(message, title = 'Confirm') {
+    return showModal(title, message, [
+        { text: 'Cancel', className: 'modal-btn-secondary', value: false },
+        { text: 'OK', className: 'modal-btn-primary', value: true }
+    ]);
+}
+
+function customConfirmDanger(message, title = 'Confirm') {
+    return showModal(title, message, [
+        { text: 'Cancel', className: 'modal-btn-secondary', value: false },
+        { text: 'Delete', className: 'modal-btn-danger', value: true }
+    ]);
+}
+
+function customPrompt(message, defaultValue = '', title = 'Input') {
+    return showModal(title, message, [
+        { text: 'Cancel', className: 'modal-btn-secondary', value: null },
+        { text: 'OK', className: 'modal-btn-primary', value: 'submit' }
+    ], {
+        defaultValue,
+        placeholder: message
+    }).then(result => result === null ? null : result);
+}
 const isSidebar = window.location.pathname.includes('sidebar.html');
 document.addEventListener('DOMContentLoaded', () => {
     const els = {
@@ -172,16 +269,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Wire rename by double-click on select
         if (!els.profileSelect._hasDbl) {
+            // NEW:
             els.profileSelect.addEventListener('dblclick', async () => {
                 const oldName = els.profileSelect.value;
-                const newNameRaw = prompt('Rename profile', oldName);
+                const newNameRaw = await customPrompt('Enter new profile name:', oldName, 'Rename Profile');
                 const newName = (newNameRaw || '').trim();
                 if (!newName || newName === oldName) return;
 
                 // Prevent accidental duplicates (case-insensitive) on the client side
                 const names = Object.keys(profiles);
                 if (names.some(n => n.toLowerCase() === newName.toLowerCase() && n !== oldName)) {
-                    alert('A profile with this name already exists.');
+                    await customAlert('A profile with this name already exists.');
                     return;
                 }
 
@@ -198,7 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     console.log(`Renamed profile ${oldName} -> ${newName}`);
                     await loadAndRenderProfiles();
                 } else {
-                    alert(res && res.message ? res.message : 'Rename failed');
+                    await customAlert(res && res.message ? res.message : 'Rename failed');
                 }
             });
             els.profileSelect._hasDbl = true;
@@ -222,8 +320,9 @@ document.addEventListener('DOMContentLoaded', () => {
         await renderExtensionList();
     });
 
+// NEW:
     els.newProfileBtn.addEventListener('click', async () => {
-        const nameRaw = prompt('New profile name:');
+        const nameRaw = await customPrompt('Enter profile name:', '', 'New Profile');
         const name = (nameRaw || '').trim();
         if (!name) return;
 
@@ -231,7 +330,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const resp = await sendMsg('getExtensions');
         const profiles = resp?.profiles || {};
         if (Object.keys(profiles).some(n => n.toLowerCase() === name.toLowerCase())) {
-            alert('A profile with this name already exists.');
+            await customAlert('A profile with this name already exists.');
             return;
         }
 
@@ -243,7 +342,6 @@ document.addEventListener('DOMContentLoaded', () => {
             currentProfile = name;
 
             // Update the select right away so the UI matches the state
-            // (loadAndRenderProfiles will repopulate it, but we set it now to avoid flicker)
             if (els.profileSelect.querySelector(`option[value="${name}"]`) == null) {
                 const opt = document.createElement('option');
                 opt.value = name;
@@ -257,13 +355,18 @@ document.addEventListener('DOMContentLoaded', () => {
             await renderExtensionList();
             console.log('Created + switched to profile', name);
         } else {
-            alert(r && r.message ? r.message : 'Failed to create profile');
+            await customAlert(r && r.message ? r.message : 'Failed to create profile');
         }
     });
-
+// NEW:
     els.deleteProfileBtn.addEventListener('click', async () => {
         const profileName = els.profileSelect.value;
-        if (!confirm(`Delete profile "${profileName}"? This cannot be undone.`)) return;
+        const confirmed = await customConfirmDanger(
+            `Delete profile "${profileName}"? This cannot be undone.`,
+            'Delete Profile'
+        );
+        if (!confirmed) return;
+
         const r = await sendMsg('deleteProfile', { profileName });
         if (r && r.status === 'success') {
             // remove from profilesOrder too
@@ -274,10 +377,9 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadAndRenderProfiles();
             await renderExtensionList();
         } else {
-            alert(r && r.message ? r.message : 'Delete failed');
+            await customAlert(r && r.message ? r.message : 'Delete failed');
         }
     });
-
     // --- Extension / manual list rendering ---
     // We render items in the order defined in profilesOrder[active], then any enabled-but-not-in-order, then detected extras.
     async function renderExtensionList() {
@@ -647,7 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             if (!modToProcess || !modToProcess.id) {
-                alert('No mod was found to randomize.');
+               await customAlert('No mod was found to randomize.');
                 return;
             }
 
@@ -758,7 +860,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const parsed = parseFloat(raw);
             if (isNaN(parsed)) {
-                alert('Invalid time value');
+               await customAlert('Invalid time value');
                 return;
             }
 
@@ -778,11 +880,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // validation
             if (unit === 'minutes' && parsed < 1) {
-                alert('Randomize time must be at least 1 minute (or 0.25 for testing) or 0 to disable.');
+               await customAlert('Randomize time must be at least 1 minute (or 0.25 for testing) or 0 to disable.');
                 return;
             }
             if ((unit === 'hours' || unit === 'days') && parsed < 1) {
-                alert(`Randomize time must be at least 1 ${unit} or 0 to disable.`);
+               await customAlert(`Randomize time must be at least 1 ${unit} or 0 to disable.`);
                 return;
             }
 
