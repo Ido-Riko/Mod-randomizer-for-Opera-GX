@@ -103,6 +103,8 @@ legend {
     box-shadow: 0 0 6px var(--accent);
 }
 
+/* Add/replace these in both popup.css and sidebar.css */
+
 .profile-buttons {
     display: flex;
     gap: 0.5rem;
@@ -124,6 +126,42 @@ legend {
 .profile-buttons button:hover {
     background-color: var(--accent);
     color: var(--accent-contrast);
+}
+
+/* Import/Export buttons row */
+.profile-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.35rem;  /* Reduced from 0.5rem to bring it closer */
+}
+
+.profile-actions button {
+    flex: 1;
+    padding: 0.5rem;
+    font-size: 0.9rem;
+    border: none;  /* Removed border to match new/delete buttons */
+    border-radius: 5px;
+    background-color: var(--border);  /* Changed from var(--bg-input) to match */
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.2s, color 0.2s;  /* Removed border-color transition */
+}
+
+.profile-actions button:hover {
+    background-color: var(--accent);
+    color: var(--accent-contrast);
+    /* Removed border-color change */
+}
+
+/* Hidden file input */
+#importFileInput {
+    display: none;
+}
+
+/* Disabled state for import/export buttons */
+.profile-section.disabled .profile-actions button {
+    pointer-events: none;
+    opacity: 0.5;
 }
 
 /* ===== Automatic Controls ===== */
@@ -575,43 +613,7 @@ input:checked + .slider:before {
     background: transparent;
 }
 
-/* Add this to both popup.css and sidebar.css */
 
-/* Import/Export buttons row */
-.profile-actions {
-    display: flex;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
-}
-
-.profile-actions button {
-    flex: 1;
-    padding: 0.5rem;
-    font-size: 0.9rem;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    background-color: var(--bg-input);
-    color: var(--text);
-    cursor: pointer;
-    transition: background 0.2s, color 0.2s, border-color 0.2s;
-}
-
-.profile-actions button:hover {
-    background-color: var(--accent);
-    color: var(--accent-contrast);
-    border-color: var(--accent);
-}
-
-/* Hidden file input */
-#importFileInput {
-    display: none;
-}
-
-/* Disabled state for import/export buttons */
-.profile-section.disabled .profile-actions button {
-    pointer-events: none;
-    opacity: 0.5;
-}
 
 /* Import results modal styling */
 .import-results {
