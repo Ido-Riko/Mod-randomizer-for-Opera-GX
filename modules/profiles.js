@@ -118,8 +118,12 @@ export async function exportProfiles() {
             profiles: {}
         };
 
-        for (const [profileName, modIds] of Object.entries(profiles)) {
-            exportData.profiles[profileName] = (modIds || []).map(id => ({
+        for (const [rawProfileName, modIds] of Object.entries(profiles)) {
+            // Rename 'Default' to avoid it being skipped as a duplicate on import
+            // if the target machine already has a 'Default' profile (which is standard).
+            const exportName = (rawProfileName === 'Default') ? 'Default (Exported)' : rawProfileName;
+
+            exportData.profiles[exportName] = (modIds || []).map(id => ({
                 id: id,
                 name: modIdToName.get(id) || `Unknown (${id})`
             }));
