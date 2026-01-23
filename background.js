@@ -803,6 +803,22 @@ chrome.runtime.onInstalled.addListener(async details => {
 });
 
 // Monitor for mod installation/uninstallation/enabling/disabling
+const updateDetectedMods = async () => {
+  console.log('Management event detected, updating mod list...');
+  await identifyModExtensions();
+  const s = await storage.get('autoModIdentificationChecked');
+  await addDetectedModsToAllProfiles(!!s.autoModIdentificationChecked);
+
+  // Notify connected popup/sidebar
+  if (popupPort) {
+    try {
+      popupPort.postMessage({ action: 'extensionsUpdated' });
+    } catch (e) {
+      console.warn('Failed to notify popup', e);
+    }
+  }
+};
+
 const onInstalled = async (details) => {
   console.log('Mod installed, updating list...', details.id);
   await updateDetectedMods();
@@ -810,10 +826,17 @@ const onInstalled = async (details) => {
 
 const onUninstalled = async (id) => {
   console.log('Mod uninstalled, tracking id:', id);
+
+  // Try to find the name from the existing detected list before updating it
+  const st = await storage.get('detectedModList');
+  const list = st.detectedModList || [];
+  const mod = list.find(m => m.id === id);
+  const name = mod ? mod.name : 'Uninstalled Mod';
+
   // Track uninstalled mod for grace period (e.g. 1 minute)
   const s = await storage.get('recentlyUninstalled');
   const recent = s.recentlyUninstalled || {};
-  recent[id] = Date.now();
+  recent[id] = { timestamp: Date.now(), name: name };
   await storage.set({ recentlyUninstalled: recent });
 
   await updateDetectedMods();

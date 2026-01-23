@@ -283,6 +283,9 @@ export async function renderExtensionList(forceProfileName = null) {
         || (resp?.extensions ? resp.extensions.filter(e => e.updateUrl === 'https://api.gx.me/store/mods/update').map(e => ({ id: e.id, name: e.name })) : []);
     const profiles = resp?.profiles || (await storageGet('profiles')).profiles || { Default: [] };
 
+    // Fetch recently uninstalled for name fallback
+    const recentlyUninstalled = (await storageGet('recentlyUninstalled')).recentlyUninstalled || {};
+
     // Choose profile
     const active = forceProfileName
         || (resp?.activeProfile || (await storageGet('activeProfile')).activeProfile || Object.keys(profiles)[0] || 'Default');
@@ -356,7 +359,14 @@ export async function renderExtensionList(forceProfileName = null) {
     };
 
     for (const id of sortedOrder) {
-        const name = detectedMap.get(id) || 'Unknown Mod (not detected)';
+        let name = detectedMap.get(id);
+        if (!name) {
+            if (recentlyUninstalled[id] && recentlyUninstalled[id].name) {
+                name = recentlyUninstalled[id].name; // + ' (temporarily saved)';
+            } else {
+                name = 'Unknown Mod (not detected)';
+            }
+        }
         const li = document.createElement('li');
         li.dataset.extid = id;
 
