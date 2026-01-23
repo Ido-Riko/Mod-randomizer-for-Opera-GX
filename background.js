@@ -803,23 +803,22 @@ chrome.runtime.onInstalled.addListener(async details => {
 });
 
 // Monitor for mod installation/uninstallation/enabling/disabling
-const updateDetectedMods = async () => {
-  console.log('Management event detected, updating mod list...');
-  await identifyModExtensions();
-  const s = await storage.get('autoModIdentificationChecked');
-  await addDetectedModsToAllProfiles(!!s.autoModIdentificationChecked);
-
-  // Notify connected popup/sidebar
-  if (popupPort) {
-    try {
-      popupPort.postMessage({ action: 'extensionsUpdated' });
-    } catch (e) {
-      console.warn('Failed to notify popup', e);
-    }
-  }
+const onInstalled = async (details) => {
+  console.log('Mod installed, updating list...', details.id);
+  await updateDetectedMods();
 };
 
-chrome.management.onInstalled.addListener(updateDetectedMods);
-chrome.management.onUninstalled.addListener(updateDetectedMods);
-chrome.management.onEnabled.addListener(updateDetectedMods);
-chrome.management.onDisabled.addListener(updateDetectedMods);
+const onUninstalled = async (id) => {
+  console.log('Mod uninstalled, tracking id:', id);
+  // Track uninstalled mod for grace period (e.g. 1 minute)
+  const s = await storage.get('recentlyUninstalled');
+  const recent = s.recentlyUninstalled || {};
+  recent[id] = Date.now();
+  await storage.set({ recentlyUninstalled: recent });
+
+  await updateDetectedMods();
+};
+
+chrome.management.onInstalled.addListener(onInstalled);
+chrome.management.onUninstalled.addListener(onUninstalled);
+// Removed onEnabled/onDisabled listeners as requested

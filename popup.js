@@ -118,28 +118,59 @@ document.addEventListener('DOMContentLoaded', () => {
             // In real rigorous check we'd compare content, but this is fine as per original logic
         }
 
+        // Clean knownDetectedIds
+        const knownIds = (st.knownDetectedIds || []).filter(id => detectedIds.has(id));
+
+        // Check grace period for uninstalled mods
+        const recentlyUninstalled = (await storageGet('recentlyUninstalled')).recentlyUninstalled || {};
+        const now = Date.now();
+        const GRACE_PERIOD_MS = 60 * 1000;
+
+        // Restore mods that are missing but within grace period
+        // We need to re-add them to profiles if they were removed? 
+        // Actually, the logic above filters profilesOrder and profiles based on detectedIds.
+        // We should MODIFY that filter to include grace-period IDs.
+
+        const gracePeriodIds = new Set();
+        for (const [id, timestamp] of Object.entries(recentlyUninstalled)) {
+            if (now - timestamp < GRACE_PERIOD_MS) {
+                gracePeriodIds.add(id);
+            }
+        }
+
+        // Re-run the cleanup logic but allow gracePeriodIds
+        let profilesChanged = false;
+
         // Clean profilesOrder
+        // We need to re-fetch or use the original 'st' but the logic above already drifted. 
+        // Let's rewrite the loop to be safer:
+
+        const validIds = new Set([...detectedIds, ...gracePeriodIds]);
+
         const profilesOrder = st.profilesOrder || {};
         for (const profileName of Object.keys(profilesOrder)) {
             const before = profilesOrder[profileName].length;
-            profilesOrder[profileName] = profilesOrder[profileName].filter(id => detectedIds.has(id));
-            if (profilesOrder[profileName].length !== before) changed = true;
+            profilesOrder[profileName] = profilesOrder[profileName].filter(id => validIds.has(id));
+            if (profilesOrder[profileName].length !== before) profilesChanged = true;
         }
 
         // Clean profiles
         const profiles = st.profiles || {};
         for (const profileName of Object.keys(profiles)) {
             const before = profiles[profileName].length;
-            profiles[profileName] = profiles[profileName].filter(id => detectedIds.has(id));
-            if (profiles[profileName].length !== before) changed = true;
+            profiles[profileName] = profiles[profileName].filter(id => validIds.has(id));
+            if (profiles[profileName].length !== before) profilesChanged = true;
         }
 
-        // Clean knownDetectedIds
-        const knownIds = (st.knownDetectedIds || []).filter(id => detectedIds.has(id));
+        // Clean knownDetectedIds - we only keep genuinely detected ones here to avoid drift?
+        // Or should we keep grace ones? 
+        // If we keep grace ones in knownDetectedIds, next time we won't add them as "new".
+        // Let's keep validIds here too.
+        const newKnownIds = (st.knownDetectedIds || []).filter(id => validIds.has(id));
 
-        if (changed || knownIds.length !== (st.knownDetectedIds || []).length) {
-            await storageSet({ profilesOrder, profiles, knownDetectedIds: knownIds });
-            console.log('Cleaned up undetected mod IDs from storage');
+        if (profilesChanged || newKnownIds.length !== (st.knownDetectedIds || []).length) {
+            await storageSet({ profilesOrder, profiles, knownDetectedIds: newKnownIds });
+            console.log('Cleaned up undetected mod IDs (respecting grace period)');
         }
     }
 
