@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=edge" />
@@ -7,129 +8,131 @@
     <link rel="stylesheet" href="popup.css" />
     <title>Mod Randomizer</title>
 </head>
+
 <body>
-<div class="popup-container">
-    <h2>Mod Randomizer</h2>
-    <p id="current-mod">Active Mod: None</p>
+    <div class="popup-container">
+        <h2>Mod Randomizer</h2>
+        <p id="current-mod">Active Mod: None</p>
 
-    <form id="modForm">
-        <!-- Profile Management Section -->
-        <!-- Replace the Profile Management Section in both popup.html and sidebar.html -->
-        <fieldset class="profile-section">
-            <legend>Profiles</legend>
-            <select id="profileSelect">
-                <option value="Default">Default</option>
-            </select>
-            <div class="profile-buttons">
-                <button type="button" id="newProfileBtn">+ New</button>
-                <button type="button" id="deleteProfileBtn">Delete</button>
-            </div>
-            <div class="profile-actions">
-                <button type="button" id="exportProfileBtn">⬇ Export</button>
-                <button type="button" id="importProfileBtn">⬆ Import</button>
-            </div>
-            <input type="file" id="importFileInput" accept=".json">
-        </fieldset>
+        <form id="modForm">
+            <!-- Profile Management Section -->
+            <!-- Replace the Profile Management Section in both popup.html and sidebar.html -->
+            <fieldset class="profile-section">
+                <legend>Profiles</legend>
+                <select id="profileSelect">
+                    <option value="Default">Default</option>
+                </select>
+                <div class="profile-buttons">
+                    <button type="button" id="newProfileBtn">+ New</button>
+                    <button type="button" id="deleteProfileBtn">Delete</button>
+                </div>
+                <div class="profile-actions">
+                    <button type="button" id="exportProfileBtn">⬇ Export</button>
+                    <button type="button" id="importProfileBtn">⬆ Import</button>
+                </div>
+                <input type="file" id="importFileInput" accept=".json">
+            </fieldset>
 
-        <!-- Randomize Button -->
-        <button id="randomizeButton" type="button">🎲 Randomize</button>
+            <!-- Randomize Button -->
+            <button id="randomizeButton" type="button">🎲 Randomize</button>
 
-        <!-- Automatic Controls -->
-        <fieldset class="auto-section">
-            <legend>Settings</legend>
-            <div class="option-container">
-                <label class="switch-label">
-                    <span>Uninstall and reinstall</span>
-                    <label class="switch">
-                        <input type="checkbox" id="uninstallAndReinstall">
-                        <span class="slider"></span>
+            <!-- Automatic Controls -->
+            <fieldset class="auto-section">
+                <legend>Settings</legend>
+                <div class="option-container">
+                    <label class="switch-label">
+                        <span>Uninstall and reinstall</span>
+                        <label class="switch">
+                            <input type="checkbox" id="uninstallAndReinstall">
+                            <span class="slider"></span>
+                        </label>
                     </label>
-                </label>
 
-                <label class="switch-label">
-                    <span>Randomize on browser restart</span>
-                    <label class="switch">
-                        <input type="checkbox" id="toggleRandomizeOnStartup">
-                        <span class="slider"></span>
+                    <label class="switch-label">
+                        <span>Randomize on browser restart</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggleRandomizeOnStartup">
+                            <span class="slider"></span>
+                        </label>
                     </label>
-                </label>
 
-                <label class="switch-label">
-                    <span>Randomize periodically on set time</span>
-                    <label class="switch">
-                        <input type="checkbox" id="toggleRandomizeOnSetTime">
-                        <span class="slider"></span>
+                    <label class="switch-label">
+                        <span>Randomize periodically on set time</span>
+                        <label class="switch">
+                            <input type="checkbox" id="toggleRandomizeOnSetTime">
+                            <span class="slider"></span>
+                        </label>
                     </label>
-                </label>
 
-                <div class="time-setting-container">
-                    <input type="number" id="timeInput" min="1" step="1" placeholder="Enter time">
-                    <select id="timeUnitSelect">
-                        <option value="minutes">Minutes</option>
-                        <option value="hours">Hours</option>
-                        <option value="days">Days</option>
-                    </select>
+                    <div class="time-setting-container">
+                        <input type="number" id="timeInput" min="1" step="1" placeholder="Enter time">
+                        <select id="timeUnitSelect">
+                            <option value="minutes">Minutes</option>
+                            <option value="hours">Hours</option>
+                            <option value="days">Days</option>
+                        </select>
+                    </div>
+
+                    <!-- Advanced Settings -->
+                    <details class="advanced-settings">
+                        <summary>Advanced Settings</summary>
+                        <div class="advanced-content">
+                            <label class="switch-label">
+                                <span>Randomize all mods (ignores profiles)</span>
+                                <label class="switch">
+                                    <input type="checkbox" id="randomizeAllMods">
+                                    <span class="slider"></span>
+                                </label>
+                            </label>
+
+                            <div class="two-column-switches">
+                                <label class="switch-label">
+                                    <span>Open mods tab</span>
+                                    <label class="switch">
+                                        <input type="checkbox" id="openModsTab">
+                                        <span class="slider"></span>
+                                    </label>
+                                </label>
+
+                                <label class="switch-label">
+                                    <span>Show notifications</span>
+                                    <label class="switch">
+                                        <input type="checkbox" id="showNotifications">
+                                        <span class="slider"></span>
+                                    </label>
+                                </label>
+                            </div>
+                        </div>
+                    </details>
+                </div>
+            </fieldset>
+
+            <!-- Manual Controls -->
+            <fieldset class="manual-section">
+                <legend>Mods in Profile</legend>
+                <p class="helper-text"><span></span>Turn a mod off to exclude it from this profile.</p>
+                <input type="text" id="searchBar" placeholder="Search mods...">
+                <div class="toggle-row">
+                    <button type="button" id="toggleAllBtn">Toggle All Mods</button>
+                    <button type="button" id="reverseAllBtn">Flip All Mods</button>
                 </div>
 
-                <!-- Advanced Settings -->
-                <details class="advanced-settings">
-                    <summary>Advanced Settings</summary>
-                    <div class="advanced-content">
-                        <label class="switch-label">
-                            <span>Randomize all mods (ignores profiles)</span>
-                            <label class="switch">
-                                <input type="checkbox" id="randomizeAllMods">
-                                <span class="slider"></span>
-                            </label>
-                        </label>
+                <ul id="extensionList"></ul>
+            </fieldset>
 
-                        <div class="two-column-switches">
-                            <label class="switch-label">
-                                <span>Open mods tab</span>
-                                <label class="switch">
-                                    <input type="checkbox" id="openModsTab">
-                                    <span class="slider"></span>
-                                </label>
-                            </label>
-
-                            <label class="switch-label">
-                                <span>Show notifications</span>
-                                <label class="switch">
-                                    <input type="checkbox" id="showNotifications">
-                                    <span class="slider"></span>
-                                </label>
-                            </label>
-                        </div>
-                    </div>
-                </details>
-            </div>
-        </fieldset>
-
-        <!-- Manual Controls -->
-        <fieldset class="manual-section">
-            <legend>Mods in Profile</legend>
-            <p class="helper-text"><span></span>Turn a mod off to exclude it from this profile.</p>
-            <input type="text" id="searchBar" placeholder="Search mods...">
-            <div class="toggle-row">
-                <button type="button" id="toggleAllBtn">Toggle All Mods</button>
-                <button type="button" id="reverseAllBtn">Flip All Mods</button>
-            </div>
-
-            <ul id="extensionList"></ul>
-        </fieldset>
-
-        <div id="message"></div>
-    </form>
-</div>
-<script src="popup.js"></script>
-<!-- Custom Modal Dialogs -->
-<div id="modalOverlay" class="modal-overlay">
-    <div class="modal-dialog">
-        <div id="modalTitle" class="modal-title"></div>
-        <div id="modalMessage" class="modal-message"></div>
-        <input type="text" id="modalInput" class="modal-input" style="display: none;">
-        <div class="modal-buttons" id="modalButtons"></div>
+            <div id="message"></div>
+        </form>
     </div>
-</div>
+    <script type="module" src="popup.js"></script>
+    <!-- Custom Modal Dialogs -->
+    <div id="modalOverlay" class="modal-overlay">
+        <div class="modal-dialog">
+            <div id="modalTitle" class="modal-title"></div>
+            <div id="modalMessage" class="modal-message"></div>
+            <input type="text" id="modalInput" class="modal-input" style="display: none;">
+            <div class="modal-buttons" id="modalButtons"></div>
+        </div>
+    </div>
 </body>
+
 </html>

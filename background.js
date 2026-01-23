@@ -21,114 +21,114 @@ let popupPort = null;
 
 // ---------- Storage helper ----------
 const storage = {
-    get(keys) { return new Promise(resolve => chrome.storage.local.get(keys, resolve)); },
-    set(obj)  { return new Promise(resolve => chrome.storage.local.set(obj, resolve)); },
-    remove(k) { return new Promise(resolve => chrome.storage.local.remove(k, resolve)); }
+  get(keys) { return new Promise(resolve => chrome.storage.local.get(keys, resolve)); },
+  set(obj) { return new Promise(resolve => chrome.storage.local.set(obj, resolve)); },
+  remove(k) { return new Promise(resolve => chrome.storage.local.remove(k, resolve)); }
 };
 
 const management = {
-    getAll() { return new Promise(resolve => chrome.management.getAll(resolve)); },
-    setEnabled(id, enabled) { return new Promise(resolve => chrome.management.setEnabled(id, enabled, () => resolve())); }
+  getAll() { return new Promise(resolve => chrome.management.getAll(resolve)); },
+  setEnabled(id, enabled) { return new Promise(resolve => chrome.management.setEnabled(id, enabled, () => resolve())); }
 };
 
 function nowMs() { return Date.now(); }
 
 // ---------- Port-based delivery ----------
 async function tryDeliverToPopup(message) {
-    if (popupPort) {
-        try {
-            popupPort.postMessage(message);
-            console.log('Delivered to popup via port:', message.action);
-            return true;
-        } catch (e) {
-            console.warn('Port delivery failed, clearing popupPort', e);
-            popupPort = null;
-        }
+  if (popupPort) {
+    try {
+      popupPort.postMessage(message);
+      console.log('Delivered to popup via port:', message.action);
+      return true;
+    } catch (e) {
+      console.warn('Port delivery failed, clearing popupPort', e);
+      popupPort = null;
     }
-    return new Promise(resolve => {
-        chrome.runtime.sendMessage(message, (res) => {
-            if (chrome.runtime.lastError) {
-                console.debug('runtime.sendMessage fallback failed', chrome.runtime.lastError.message);
-                resolve(false);
-            } else {
-                console.log('runtime.sendMessage fallback returned, may not be consumed');
-                resolve(true);
-            }
-        });
+  }
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(message, (res) => {
+      if (chrome.runtime.lastError) {
+        console.debug('runtime.sendMessage fallback failed', chrome.runtime.lastError.message);
+        resolve(false);
+      } else {
+        console.log('runtime.sendMessage fallback returned, may not be consumed');
+        resolve(true);
+      }
     });
+  });
 }
 
 chrome.runtime.onConnect.addListener((port) => {
-    if (port && port.name === 'popup') {
-        popupPort = port;
-        console.log('Background: popup connected via port');
+  if (port && port.name === 'popup') {
+    popupPort = port;
+    console.log('Background: popup connected via port');
 
-        port.onMessage.addListener(async (msg) => {
-            if (!msg || !msg.action) return;
+    port.onMessage.addListener(async (msg) => {
+      if (!msg || !msg.action) return;
 
-            if (msg.action === 'popupReady') {
-                const { pendingRandomization } = await storage.get('pendingRandomization');
-                if (pendingRandomization && pendingRandomization.enabledExtension) {
-                    popupPort.postMessage({
-                        action: 'randomizationCompleted',
-                        enabledExtension: pendingRandomization.enabledExtension,
-                        pendingId: pendingRandomization.timestamp
-                    });
-                    console.log('Sent pendingRandomization via port to popup');
-                }
-            } else if (msg.action === 'randomizationAck') {
-                await storage.remove('pendingRandomization');
-                console.log('Cleared pendingRandomization after ACK');
-            }
-        });
+      if (msg.action === 'popupReady') {
+        const { pendingRandomization } = await storage.get('pendingRandomization');
+        if (pendingRandomization && pendingRandomization.enabledExtension) {
+          popupPort.postMessage({
+            action: 'randomizationCompleted',
+            enabledExtension: pendingRandomization.enabledExtension,
+            pendingId: pendingRandomization.timestamp
+          });
+          console.log('Sent pendingRandomization via port to popup');
+        }
+      } else if (msg.action === 'randomizationAck') {
+        await storage.remove('pendingRandomization');
+        console.log('Cleared pendingRandomization after ACK');
+      }
+    });
 
-        port.onDisconnect.addListener(() => {
-            console.log('Popup port disconnected');
-            popupPort = null;
-        });
-    }
+    port.onDisconnect.addListener(() => {
+      console.log('Popup port disconnected');
+      popupPort = null;
+    });
+  }
 });
 
 // ---------- Identification ----------
 async function identifyModExtensions() {
-    if (identifyInFlight) return identifyInFlight;
-    const now = Date.now();
-    if (now - lastIdentifyAt < IDENTIFY_THROTTLE_MS) {
-        const cached = await storage.get('detectedModList');
-        return cached.detectedModList || [];
+  if (identifyInFlight) return identifyInFlight;
+  const now = Date.now();
+  if (now - lastIdentifyAt < IDENTIFY_THROTTLE_MS) {
+    const cached = await storage.get('detectedModList');
+    return cached.detectedModList || [];
+  }
+  identifyInFlight = (async () => {
+    try {
+      const all = await management.getAll();
+      const detectedIds = all
+        .filter(e => e.updateUrl === 'https://api.gx.me/store/mods/update')
+        .map(e => ({ id: e.id, name: e.name }));
+      await storage.set({ detectedModList: detectedIds });
+      lastIdentifyAt = Date.now();
+      console.log('identifyModExtensions -> detected', detectedIds.length, 'mods');
+      return detectedIds;
+    } catch (err) {
+      console.error('identifyModExtensions error', err);
+      return [];
+    } finally {
+      identifyInFlight = null;
     }
-    identifyInFlight = (async () => {
-        try {
-            const all = await management.getAll();
-            const detectedIds = all
-                .filter(e => e.updateUrl === 'https://api.gx.me/store/mods/update')
-                .map(e => ({ id: e.id, name: e.name }));
-            await storage.set({ detectedModList: detectedIds });
-            lastIdentifyAt = Date.now();
-            console.log('identifyModExtensions -> detected', detectedIds.length, 'mods');
-            return detectedIds;
-        } catch (err) {
-            console.error('identifyModExtensions error', err);
-            return [];
-        } finally {
-            identifyInFlight = null;
-        }
-    })();
-    return identifyInFlight;
+  })();
+  return identifyInFlight;
 }
 
 async function ensureDefaults() {
-    const s = await storage.get(['profiles', 'activeProfile']);
-    if (!s.profiles) {
-        const detected = await storage.get('detectedModList');
-        const detectedIds = Array.isArray(detected.detectedModList)
-            ? detected.detectedModList.map(m => m.id)
-            : [];
+  const s = await storage.get(['profiles', 'activeProfile']);
+  if (!s.profiles) {
+    const detected = await storage.get('detectedModList');
+    const detectedIds = Array.isArray(detected.detectedModList)
+      ? detected.detectedModList.map(m => m.id)
+      : [];
 
-        const profiles = { Default: detectedIds };
-        await storage.set({ profiles, activeProfile: 'Default' });
-        console.log(`Initialized default profile with ${detectedIds.length} mods`);
-    }
+    const profiles = { Default: detectedIds };
+    await storage.set({ profiles, activeProfile: 'Default' });
+    console.log(`Initialized default profile with ${detectedIds.length} mods`);
+  }
 }
 
 const CATALOG_URL = 'https://raw.githubusercontent.com/Ido-Riko/Mod-randomizer-for-Opera-GX/main/url-catalog.json';
@@ -139,370 +139,370 @@ loadCatalog();
 
 // Load static catalog on startup
 async function loadCatalog() {
-    try {
-        const res = await fetch(CATALOG_URL);
-        catalog = await res.json();
-        console.log('Catalog loaded:', Object.keys(catalog).length, 'mods');
-    } catch (err) {
-        console.error('Failed to load catalog:', err);
-    }
+  try {
+    const res = await fetch(CATALOG_URL);
+    catalog = await res.json();
+    console.log('Catalog loaded:', Object.keys(catalog).length, 'mods');
+  } catch (err) {
+    console.error('Failed to load catalog:', err);
+  }
 }
 
 // Function to get a mod URL by name
 // ---------------------- getModUrlByName ----------------------
 async function getModUrlByName(modName) {
-    console.log(`[getModUrlByName] Looking for URL of mod: "${modName}"`);
+  console.log(`[getModUrlByName] Looking for URL of mod: "${modName}"`);
 
-    // Check catalog first
-    if (catalog[modName] && catalog[modName].url) {
-        console.log(`[getModUrlByName] Found in catalog:`, catalog[modName].url);
-        return catalog[modName].url;
-    } else {
-        console.log(`[getModUrlByName] Not found in catalog for name: "${modName}"`);
-    }
+  // Check catalog first
+  if (catalog[modName] && catalog[modName].url) {
+    console.log(`[getModUrlByName] Found in catalog:`, catalog[modName].url);
+    return catalog[modName].url;
+  } else {
+    console.log(`[getModUrlByName] Not found in catalog for name: "${modName}"`);
+  }
 
-    // Check newly installed mods
-    const storageData = await chrome.storage.local.get(['newMods']);
-    const newMods = storageData.newMods || {};
-    const found = Object.values(newMods).find(m => m.name === modName);
-    if (found && found.url) {
-        console.log(`[getModUrlByName] Found in newMods storage:`, found.url);
-        return found.url;
-    } else {
-        console.log(`[getModUrlByName] Not found in newMods storage for: "${modName}"`);
-    }
+  // Check newly installed mods
+  const storageData = await chrome.storage.local.get(['newMods']);
+  const newMods = storageData.newMods || {};
+  const found = Object.values(newMods).find(m => m.name === modName);
+  if (found && found.url) {
+    console.log(`[getModUrlByName] Found in newMods storage:`, found.url);
+    return found.url;
+  } else {
+    console.log(`[getModUrlByName] Not found in newMods storage for: "${modName}"`);
+  }
 
-    // Fallback
-    console.warn(`[getModUrlByName] No URL found for "${modName}"`);
-    return null; // temporarily remove fallback to mods/manage
+  // Fallback
+  console.warn(`[getModUrlByName] No URL found for "${modName}"`);
+  return null; // temporarily remove fallback to mods/manage
 }
 
 
 // Add only newly detected mods to all profiles when randomize-all is OFF.
 // Maintain a persistent set of knownDetectedIds so previously unchecked mods stay unchecked.
 async function addDetectedModsToAllProfiles(autoIdentify /* randomizeAllMods */) {
-    const [detectedWrapper, profilesWrapper, knownWrapper] = await Promise.all([
-        storage.get('detectedModList'),
-        storage.get(['profiles', 'activeProfile']),
-        storage.get('knownDetectedIds')
-    ]);
+  const [detectedWrapper, profilesWrapper, knownWrapper] = await Promise.all([
+    storage.get('detectedModList'),
+    storage.get(['profiles', 'activeProfile']),
+    storage.get('knownDetectedIds')
+  ]);
 
-    const detectedList = detectedWrapper.detectedModList || [];
-    const detectedIds = detectedList.map(m => m.id);
-    const profiles = profilesWrapper.profiles || {};
+  const detectedList = detectedWrapper.detectedModList || [];
+  const detectedIds = detectedList.map(m => m.id);
+  const profiles = profilesWrapper.profiles || {};
 
-    // Ensure there is at least a Default profile
-    if (!Object.keys(profiles).length) profiles['Default'] = [];
+  // Ensure there is at least a Default profile
+  if (!Object.keys(profiles).length) profiles['Default'] = [];
 
-    // Build set of previously known ids (persisted)
-    const knownDetectedIds = Array.isArray(knownWrapper.knownDetectedIds) ? new Set(knownWrapper.knownDetectedIds) : new Set();
+  // Build set of previously known ids (persisted)
+  const knownDetectedIds = Array.isArray(knownWrapper.knownDetectedIds) ? new Set(knownWrapper.knownDetectedIds) : new Set();
 
-    // Compute only genuinely new ids (newly installed mods since last time)
-    const newIds = detectedIds.filter(id => !knownDetectedIds.has(id));
+  // Compute only genuinely new ids (newly installed mods since last time)
+  const newIds = detectedIds.filter(id => !knownDetectedIds.has(id));
 
-    let mutated = false;
+  let mutated = false;
 
-    // Only mutate profiles when randomize-all is OFF, and only by adding newIds
-    if (!autoIdentify && newIds.length) {
-        for (const profileName of Object.keys(profiles)) {
-            const set = new Set(profiles[profileName] || []);
-            let addedCount = 0;
-            for (const id of newIds) {
-                if (!set.has(id)) {
-                    profiles[profileName].push(id); // add new mod ON for all profiles
-                    addedCount++;
-                }
-            }
-            if (addedCount > 0) {
-                console.log(`identify: added ${addedCount} new mod(s) to profile '${profileName}'`);
-                mutated = true;
-            }
+  // Only mutate profiles when randomize-all is OFF, and only by adding newIds
+  if (!autoIdentify && newIds.length) {
+    for (const profileName of Object.keys(profiles)) {
+      const set = new Set(profiles[profileName] || []);
+      let addedCount = 0;
+      for (const id of newIds) {
+        if (!set.has(id)) {
+          profiles[profileName].push(id); // add new mod ON for all profiles
+          addedCount++;
         }
+      }
+      if (addedCount > 0) {
+        console.log(`identify: added ${addedCount} new mod(s) to profile '${profileName}'`);
+        mutated = true;
+      }
     }
+  }
 
-    // Update knownDetectedIds to include all currently detected ids (union)
-    const updatedKnown = Array.from(new Set([...knownDetectedIds, ...detectedIds]));
-    // Persist storage updates atomically
-    if (mutated) {
-        await storage.set({ profiles, knownDetectedIds: updatedKnown });
-    } else {
-        await storage.set({ knownDetectedIds: updatedKnown });
-    }
+  // Update knownDetectedIds to include all currently detected ids (union)
+  const updatedKnown = Array.from(new Set([...knownDetectedIds, ...detectedIds]));
+  // Persist storage updates atomically
+  if (mutated) {
+    await storage.set({ profiles, knownDetectedIds: updatedKnown });
+  } else {
+    await storage.set({ knownDetectedIds: updatedKnown });
+  }
 
-    return { detected: detectedList, profiles };
+  return { detected: detectedList, profiles };
 }
 // ---------- Randomization ----------
 // ---------------------- handleModEnableWorkflow ----------------------
 async function handleModEnableWorkflow(modIdsForRandomization, source) {
-// This function should only be used when enabling mods.
-// It disables all mods in profile.
-// Then, if source is manual, and if open mods tab is on, show redirect message and then redirect. (Redirect message is in popup.js)
-// if source is manual and opens mods tab is off, don't show redirect message on popup, and don't redirect.
-// if source is not manual, check if notifications are on, and if open mods tab is on.
-// If notifications are on, and opens mods tab is on, create a notification that when clicked, redirects the user to mods tab,
-// but also redirect after 3 seconds anyways.
-// If notifications are on, but opens mods tab is off, don't redirect after 3 seconds, only show the notification that can be clicked.
-// If notifications are off, but open mods tab is on, redirect after 3 seconds without a notification
-// If notifications are off and open mods tab is off, don't redirect, and don't create a notification.
+  // This function should only be used when enabling mods.
+  // It disables all mods in profile.
+  // Then, if source is manual, and if open mods tab is on, show redirect message and then redirect. (Redirect message is in popup.js)
+  // if source is manual and opens mods tab is off, don't show redirect message on popup, and don't redirect.
+  // if source is not manual, check if notifications are on, and if open mods tab is on.
+  // If notifications are on, and opens mods tab is on, create a notification that when clicked, redirects the user to mods tab,
+  // but also redirect after 3 seconds anyways.
+  // If notifications are on, but opens mods tab is off, don't redirect after 3 seconds, only show the notification that can be clicked.
+  // If notifications are off, but open mods tab is on, redirect after 3 seconds without a notification
+  // If notifications are off and open mods tab is off, don't redirect, and don't create a notification.
 
-    console.log(`[handleModEnableWorkflow] Starting workflow. Mods:`, modIdsForRandomization, `source:`, source);
+  console.log(`[handleModEnableWorkflow] Starting workflow. Mods:`, modIdsForRandomization, `source:`, source);
 
-    if (!modIdsForRandomization || modIdsForRandomization.length === 0) {
-        console.warn('[handleModEnableWorkflow] No mods to randomize');
-        return null;
-    }
-    const s = await storage.get(['lastEnabledModId', 'openModsTabChecked', 'showNotificationsChecked']);
-    const lastEnabled = s.lastEnabledModId;
-    const all = await management.getAll();
-    const mods = all.filter(e => modIdsForRandomization.includes(e.id));
+  if (!modIdsForRandomization || modIdsForRandomization.length === 0) {
+    console.warn('[handleModEnableWorkflow] No mods to randomize');
+    return null;
+  }
+  const s = await storage.get(['lastEnabledModId', 'openModsTabChecked', 'showNotificationsChecked']);
+  const lastEnabled = s.lastEnabledModId;
+  const all = await management.getAll();
+  const mods = all.filter(e => modIdsForRandomization.includes(e.id));
 
-    if (!mods.length) {
-        console.warn('[handleModEnableWorkflow] No mods found in management');
-        return null;
-    }
+  if (!mods.length) {
+    console.warn('[handleModEnableWorkflow] No mods found in management');
+    return null;
+  }
 
-    // Disable currently enabled mods
-    const currentlyEnabled = mods.filter(m => m.enabled);
-    await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
+  // Disable currently enabled mods
+  const currentlyEnabled = mods.filter(m => m.enabled);
+  await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
 
-    // Pick new candidate (not last enabled)
-    const candidates = mods.filter(m => m.id !== lastEnabled);
-    if (!candidates.length) return null;
+  // Pick new candidate (not last enabled)
+  const candidates = mods.filter(m => m.id !== lastEnabled);
+  if (!candidates.length) return null;
 
-    const selected = candidates[Math.floor(Math.random() * candidates.length)];
-    console.log(`[handleModEnableWorkflow] Selected mod: ${selected.name} (id: ${selected.id})`);
+  const selected = candidates[Math.floor(Math.random() * candidates.length)];
+  console.log(`[handleModEnableWorkflow] Selected mod: ${selected.name} (id: ${selected.id})`);
 
-    // Enable the selected mod
-    await management.setEnabled(selected.id, true);
-    await storage.set({ lastEnabledModId: selected.id, currentMod: selected.name });
-    console.log(`[handleModEnableWorkflow] Enabled mod: ${selected.name}`);
+  // Enable the selected mod
+  await management.setEnabled(selected.id, true);
+  await storage.set({ lastEnabledModId: selected.id, currentMod: selected.name });
+  console.log(`[handleModEnableWorkflow] Enabled mod: ${selected.name}`);
 
-    if (source === "manual") {
-        // MANUAL: check if open mods tab is on
-        const shouldRedirect = s.openModsTabChecked === undefined ? true : !!s.openModsTabChecked;
-        return {
-            id: selected.id,
-            name: selected.name,
-            modsTabUrl: shouldRedirect ? 'opera://configure/mods/manage' : null
-        };
-    } else {
-        // NON-MANUAL (alarm/startup): check notifications and open mods tab settings
-        const notificationsOn = s.showNotificationsChecked === undefined ? true : !!s.showNotificationsChecked;
-        const openModsTabOn = s.openModsTabChecked === undefined ? true : !!s.openModsTabChecked;
+  if (source === "manual") {
+    // MANUAL: check if open mods tab is on
+    const shouldRedirect = s.openModsTabChecked === undefined ? true : !!s.openModsTabChecked;
+    return {
+      id: selected.id,
+      name: selected.name,
+      modsTabUrl: shouldRedirect ? 'opera://configure/mods/manage' : null
+    };
+  } else {
+    // NON-MANUAL (alarm/startup): check notifications and open mods tab settings
+    const notificationsOn = s.showNotificationsChecked === undefined ? true : !!s.showNotificationsChecked;
+    const openModsTabOn = s.openModsTabChecked === undefined ? true : !!s.openModsTabChecked;
 
-        if (notificationsOn) {
-            // Create notification
-            const notificationDelay = source === 'startup' ? 5000 : 500;
-            const message = openModsTabOn
-                ? `Enabled: ${selected.name}\n\nRedirecting to mods tab...`
-                : `Enabled: ${selected.name}`;
+    if (notificationsOn) {
+      // Create notification
+      const notificationDelay = source === 'startup' ? 5000 : 500;
+      const message = openModsTabOn
+        ? `Enabled: ${selected.name}\n\nRedirecting to mods tab...`
+        : `Enabled: ${selected.name}`;
 
-            setTimeout(() => {
-                chrome.notifications.create('modRandomizerAlert', {
-                    type: 'basic',
-                    iconUrl: 'icons/icon_128.png',
-                    title: 'Mod Randomizer',
-                    message: message,
-                    requireInteraction: false
-                });
-                console.log(`[handleModEnableWorkflow] Notification created for ${selected.name}`);
+      setTimeout(() => {
+        chrome.notifications.create('modRandomizerAlert', {
+          type: 'basic',
+          iconUrl: 'icons/icon_128.png',
+          title: 'Mod Randomizer',
+          message: message,
+          requireInteraction: false
+        });
+        console.log(`[handleModEnableWorkflow] Notification created for ${selected.name}`);
 
-                if (openModsTabOn) {
-                    // Redirect after 3 seconds
-                    setTimeout(() => {
-                        chrome.tabs.create({ url: 'opera://configure/mods/manage' });
-                        chrome.notifications.clear('modRandomizerAlert');
-                    }, 3000);
-                } else {
-                    // Auto-clear notification after a few seconds
-                    setTimeout(() => {
-                        chrome.notifications.clear('modRandomizerAlert');
-                    }, 5000);
-                }
-            }, notificationDelay);
+        if (openModsTabOn) {
+          // Redirect after 3 seconds
+          setTimeout(() => {
+            chrome.tabs.create({ url: 'opera://configure/mods/manage' });
+            chrome.notifications.clear('modRandomizerAlert');
+          }, 3000);
         } else {
-            // No notifications
-            if (openModsTabOn) {
-                // Redirect after 3 seconds without notification
-                setTimeout(() => {
-                    chrome.tabs.create({ url: 'opera://configure/mods/manage' });
-                }, 3000);
-            }
-            // else: do nothing
+          // Auto-clear notification after a few seconds
+          setTimeout(() => {
+            chrome.notifications.clear('modRandomizerAlert');
+          }, 5000);
         }
-
-        return {
-            id: selected.id,
-            name: selected.name
-        };
+      }, notificationDelay);
+    } else {
+      // No notifications
+      if (openModsTabOn) {
+        // Redirect after 3 seconds without notification
+        setTimeout(() => {
+          chrome.tabs.create({ url: 'opera://configure/mods/manage' });
+        }, 3000);
+      }
+      // else: do nothing
     }
+
+    return {
+      id: selected.id,
+      name: selected.name
+    };
+  }
 }// ---------------------- executeRandomization ----------------------
 async function executeRandomization(source = 'unknown') {
-    // This function should always be used for randomization from background. If it's not a "manual with uninstall on", then use this function.
-    // The function should first check if uninstall is on. if it is, fetch the url. if the url is missing, call handleModEnableWorkflow to enable instead.
-    // if uninstall isn't on, call handleModEnableWorkflow
-    // If the url isn't missing, do the same flow of disabling mods in profile, then if notifications are on, create notification for uninstall.
-    // if notifications aren't on, call handleEnableWorkFlow as if uninstall is off. and don't create any notification.
-    console.log(`[executeRandomization] Source: ${source}`);
-    try {
-        const s = await storage.get([
-            'profiles',
-            'activeProfile',
-            'uninstallAndReinstallChecked',
-            'autoModIdentificationChecked',
-            'openModsTabChecked',
-            'showNotificationsChecked',
-            'lastEnabledModId'
-        ]);
-        const { detectedModList = [] } = await storage.get('detectedModList');
-        const useAll = !!s.autoModIdentificationChecked;
-        const activeList = useAll ? detectedModList.map(m => m.id) : (s.profiles?.[s.activeProfile] || []);
+  // This function should always be used for randomization from background. If it's not a "manual with uninstall on", then use this function.
+  // The function should first check if uninstall is on. if it is, fetch the url. if the url is missing, call handleModEnableWorkflow to enable instead.
+  // if uninstall isn't on, call handleModEnableWorkflow
+  // If the url isn't missing, do the same flow of disabling mods in profile, then if notifications are on, create notification for uninstall.
+  // if notifications aren't on, call handleEnableWorkFlow as if uninstall is off. and don't create any notification.
+  console.log(`[executeRandomization] Source: ${source}`);
+  try {
+    const s = await storage.get([
+      'profiles',
+      'activeProfile',
+      'uninstallAndReinstallChecked',
+      'autoModIdentificationChecked',
+      'openModsTabChecked',
+      'showNotificationsChecked',
+      'lastEnabledModId'
+    ]);
+    const { detectedModList = [] } = await storage.get('detectedModList');
+    const useAll = !!s.autoModIdentificationChecked;
+    const activeList = useAll ? detectedModList.map(m => m.id) : (s.profiles?.[s.activeProfile] || []);
 
-        if (!activeList || activeList.length === 0) {
-            console.warn('[executeRandomization] No mods to randomize');
-            return null;
-        }
-
-        // Check if uninstall is on
-        if (s.uninstallAndReinstallChecked) {
-            // Get candidates
-            const all = await management.getAll();
-            const mods = all.filter(e => activeList.includes(e.id));
-            const lastEnabled = s.lastEnabledModId;
-            const candidates = mods.filter(m => m.id !== lastEnabled);
-
-            if (!candidates.length) return null;
-
-            const selected = candidates[Math.floor(Math.random() * candidates.length)];
-
-            // Fetch URL
-            const reinstallUrl = await getModUrlByName(selected.name);
-
-            if (!reinstallUrl) {
-                // URL missing: call handleModEnableWorkflow to enable instead
-                console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow');
-                const result = await handleModEnableWorkflow(activeList, source);
-
-                if (result && source === 'manual') {
-                    const pending = { enabledExtension: result, timestamp: nowMs() };
-                    await storage.set({ pendingRandomization: pending });
-                    tryDeliverToPopup({ action: 'randomizationCompleted', enabledExtension: result, pendingId: pending.timestamp });
-                }
-
-                return result;
-            } else {
-                // URL found: disable mods in profile
-                const currentlyEnabled = mods.filter(m => m.enabled);
-                await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
-                await storage.set({ lastEnabledModId: selected.id, currentMod: selected.name });
-
-                if (source === 'manual') {
-                    // Manual uninstall: return result to popup (popup handles uninstall + redirect)
-                    console.log('[executeRandomization] Manual uninstall mode, returning result to popup');
-                    return {
-                        id: selected.id,
-                        name: selected.name,
-                        reinstallUrl: reinstallUrl
-                    };
-                } else {
-                    // Non-manual (alarm/startup): check if notifications are on
-                    const notificationsOn = s.showNotificationsChecked === undefined ? true : !!s.showNotificationsChecked;
-
-                    if (notificationsOn) {
-                        // Create notification for uninstall
-                        const notificationDelay = source === 'startup' ? 5000 : 500;
-
-                        await storage.set({
-                            pendingNotification: {
-                                modId: selected.id,
-                                modName: selected.name,
-                                reinstallUrl: reinstallUrl,
-                                uninstallMode: true,
-                                timestamp: nowMs()
-                            }
-                        });
-
-                        setTimeout(() => {
-                            chrome.notifications.create('modRandomizerAlert', {
-                                type: 'basic',
-                                iconUrl: 'icons/icon_128.png',
-                                title: 'Mod Randomizer',
-                                message: `Ready to switch to: ${selected.name}\n\nClick to uninstall and reinstall.`,
-                                requireInteraction: true
-                            });
-                            console.log(`[executeRandomization] Uninstall notification created for ${selected.name}`);
-                        }, notificationDelay);
-
-                        return null;
-                    } else {
-                        // Notifications off: call handleModEnableWorkflow as if uninstall is off
-                        console.log('[executeRandomization] Notifications off, calling handleModEnableWorkflow');
-                        return await handleModEnableWorkflow(activeList, source);
-                    }
-                }
-            }
-        } else {
-            // Uninstall off: call handleModEnableWorkflow
-            console.log('[executeRandomization] Uninstall off, calling handleModEnableWorkflow');
-            const result = await handleModEnableWorkflow(activeList, source);
-
-            if (result && source === 'manual') {
-                const pending = { enabledExtension: result, timestamp: nowMs() };
-                await storage.set({ pendingRandomization: pending });
-                tryDeliverToPopup({ action: 'randomizationCompleted', enabledExtension: result, pendingId: pending.timestamp });
-            }
-
-            return result;
-        }
-    } catch (err) {
-        console.error('[executeRandomization] error', err);
-        return null;
+    if (!activeList || activeList.length === 0) {
+      console.warn('[executeRandomization] No mods to randomize');
+      return null;
     }
+
+    // Check if uninstall is on
+    if (s.uninstallAndReinstallChecked) {
+      // Get candidates
+      const all = await management.getAll();
+      const mods = all.filter(e => activeList.includes(e.id));
+      const lastEnabled = s.lastEnabledModId;
+      const candidates = mods.filter(m => m.id !== lastEnabled);
+
+      if (!candidates.length) return null;
+
+      const selected = candidates[Math.floor(Math.random() * candidates.length)];
+
+      // Fetch URL
+      const reinstallUrl = await getModUrlByName(selected.name);
+
+      if (!reinstallUrl) {
+        // URL missing: call handleModEnableWorkflow to enable instead
+        console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow');
+        const result = await handleModEnableWorkflow(activeList, source);
+
+        if (result && source === 'manual') {
+          const pending = { enabledExtension: result, timestamp: nowMs() };
+          await storage.set({ pendingRandomization: pending });
+          tryDeliverToPopup({ action: 'randomizationCompleted', enabledExtension: result, pendingId: pending.timestamp });
+        }
+
+        return result;
+      } else {
+        // URL found: disable mods in profile
+        const currentlyEnabled = mods.filter(m => m.enabled);
+        await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
+        await storage.set({ lastEnabledModId: selected.id, currentMod: selected.name });
+
+        if (source === 'manual') {
+          // Manual uninstall: return result to popup (popup handles uninstall + redirect)
+          console.log('[executeRandomization] Manual uninstall mode, returning result to popup');
+          return {
+            id: selected.id,
+            name: selected.name,
+            reinstallUrl: reinstallUrl
+          };
+        } else {
+          // Non-manual (alarm/startup): check if notifications are on
+          const notificationsOn = s.showNotificationsChecked === undefined ? true : !!s.showNotificationsChecked;
+
+          if (notificationsOn) {
+            // Create notification for uninstall
+            const notificationDelay = source === 'startup' ? 5000 : 500;
+
+            await storage.set({
+              pendingNotification: {
+                modId: selected.id,
+                modName: selected.name,
+                reinstallUrl: reinstallUrl,
+                uninstallMode: true,
+                timestamp: nowMs()
+              }
+            });
+
+            setTimeout(() => {
+              chrome.notifications.create('modRandomizerAlert', {
+                type: 'basic',
+                iconUrl: 'icons/icon_128.png',
+                title: 'Mod Randomizer',
+                message: `Ready to switch to: ${selected.name}\n\nClick to uninstall and reinstall.`,
+                requireInteraction: true
+              });
+              console.log(`[executeRandomization] Uninstall notification created for ${selected.name}`);
+            }, notificationDelay);
+
+            return null;
+          } else {
+            // Notifications off: call handleModEnableWorkflow as if uninstall is off
+            console.log('[executeRandomization] Notifications off, calling handleModEnableWorkflow');
+            return await handleModEnableWorkflow(activeList, source);
+          }
+        }
+      }
+    } else {
+      // Uninstall off: call handleModEnableWorkflow
+      console.log('[executeRandomization] Uninstall off, calling handleModEnableWorkflow');
+      const result = await handleModEnableWorkflow(activeList, source);
+
+      if (result && source === 'manual') {
+        const pending = { enabledExtension: result, timestamp: nowMs() };
+        await storage.set({ pendingRandomization: pending });
+        tryDeliverToPopup({ action: 'randomizationCompleted', enabledExtension: result, pendingId: pending.timestamp });
+      }
+
+      return result;
+    }
+  } catch (err) {
+    console.error('[executeRandomization] error', err);
+    return null;
+  }
 }
 // Handle notification clicks - only for uninstall mode
 chrome.notifications.onClicked.addListener((notificationId) => {
-    if (notificationId === 'modRandomizerAlert') {
-        // Use callback-based storage to preserve user gesture synchronously
-        chrome.storage.local.get('pendingNotification', (result) => {
-            const pendingNotification = result.pendingNotification;
-            if (!pendingNotification) return;
+  if (notificationId === 'modRandomizerAlert') {
+    // Use callback-based storage to preserve user gesture synchronously
+    chrome.storage.local.get('pendingNotification', (result) => {
+      const pendingNotification = result.pendingNotification;
+      if (!pendingNotification) return;
 
-            // Only handle uninstall mode clicks (enable mode notification is informational only)
-            if (!pendingNotification.uninstallMode) {
-                console.log('Notification clicked but enable mode - no action needed');
-                return;
-            }
+      // Only handle uninstall mode clicks (enable mode notification is informational only)
+      if (!pendingNotification.uninstallMode) {
+        console.log('Notification clicked but enable mode - no action needed');
+        return;
+      }
 
-            console.log(`Notification clicked for ${pendingNotification.modName} - triggering uninstall`);
+      console.log(`Notification clicked for ${pendingNotification.modName} - triggering uninstall`);
 
-            // Clear notification immediately
-            chrome.notifications.clear(notificationId);
+      // Clear notification immediately
+      chrome.notifications.clear(notificationId);
 
-            // Trigger uninstall IMMEDIATELY using this click event (user gesture) - MUST be synchronous
-            chrome.management.uninstall(pendingNotification.modId, { showConfirmDialog: true }, () => {
-                if (chrome.runtime.lastError) {
-                    console.log('Uninstall cancelled by user');
-                } else {
-                    console.log('Mod uninstalled successfully from notification');
-                }
-                // Clear storage after uninstall completes (whether cancelled or not)
-                chrome.storage.local.remove('pendingNotification');
-            });
+      // Trigger uninstall IMMEDIATELY using this click event (user gesture) - MUST be synchronous
+      chrome.management.uninstall(pendingNotification.modId, { showConfirmDialog: true }, () => {
+        if (chrome.runtime.lastError) {
+          console.log('Uninstall cancelled by user');
+        } else {
+          console.log('Mod uninstalled successfully from notification');
+        }
+        // Clear storage after uninstall completes (whether cancelled or not)
+        chrome.storage.local.remove('pendingNotification');
+      });
 
-            // Redirect immediately (don't wait for uninstall to complete)
-            if (pendingNotification.reinstallUrl) {
-                chrome.tabs.create({ url: pendingNotification.reinstallUrl });
-            }
-        });
-    }
+      // Redirect immediately (don't wait for uninstall to complete)
+      if (pendingNotification.reinstallUrl) {
+        chrome.tabs.create({ url: pendingNotification.reinstallUrl });
+      }
+    });
+  }
 });
 
 // Clean up on notification dismiss
 chrome.notifications.onClosed.addListener(async (notificationId) => {
-    if (notificationId === 'modRandomizerAlert') {
-        await storage.remove('pendingNotification');
-        console.log('Notification dismissed, cleared pending action');
-    }
+  if (notificationId === 'modRandomizerAlert') {
+    await storage.remove('pendingNotification');
+    console.log('Notification dismissed, cleared pending action');
+  }
 });
 // ---------- Alarms & Scheduling ----------
 async function setRandomizeTime(minutes) {
@@ -547,13 +547,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         //This handles the direct, synchronous request from the popup's button.
-          case 'getRandomMod': {
-              console.log('Message: getRandomMod received (direct from popup)');
-              // Always use executeRandomization for any randomization from background
-              const result = await executeRandomization('manual');
-              sendResponse(result);
-              break;
-          }
+        case 'getRandomMod': {
+          console.log('Message: getRandomMod received (direct from popup)');
+          // Always use executeRandomization for any randomization from background
+          const result = await executeRandomization('manual');
+          sendResponse(result);
+          break;
+        }
         case 'getExtensions': {
           // Return only detected mods (so popup shows only mods), plus profiles + activeProfile
           const { detectedModList = [] } = await storage.get('detectedModList');
@@ -798,6 +798,28 @@ chrome.runtime.onInstalled.addListener(async details => {
       console.log('Migration: set defaults', updates);
     }
     await identifyModExtensions();
-    await ensureDefaults();
   }
+  await ensureDefaults();
 });
+
+// Monitor for mod installation/uninstallation/enabling/disabling
+const updateDetectedMods = async () => {
+  console.log('Management event detected, updating mod list...');
+  await identifyModExtensions();
+  const s = await storage.get('autoModIdentificationChecked');
+  await addDetectedModsToAllProfiles(!!s.autoModIdentificationChecked);
+
+  // Notify connected popup/sidebar
+  if (popupPort) {
+    try {
+      popupPort.postMessage({ action: 'extensionsUpdated' });
+    } catch (e) {
+      console.warn('Failed to notify popup', e);
+    }
+  }
+};
+
+chrome.management.onInstalled.addListener(updateDetectedMods);
+chrome.management.onUninstalled.addListener(updateDetectedMods);
+chrome.management.onEnabled.addListener(updateDetectedMods);
+chrome.management.onDisabled.addListener(updateDetectedMods);
