@@ -352,8 +352,17 @@ async function executeRandomization(source = 'unknown') {
       'autoModIdentificationChecked',
       'openModsTabChecked',
       'showNotificationsChecked',
-      'lastEnabledModId'
+      'lastEnabledModId',
+      'toggleRandomizeOnSetTimeChecked'
     ]);
+
+    // Guard: If triggered by alarm but the feature is disabled, abort and clean up.
+    if (source === 'alarm' && !s.toggleRandomizeOnSetTimeChecked) {
+      console.warn('[executeRandomization] Alarm fired but toggleRandomizeOnSetTimeChecked is OFF. Aborting and clearing alarm.');
+      chrome.alarms.clear('randomizeAlarm');
+      return null;
+    }
+
     const { detectedModList = [] } = await storage.get('detectedModList');
     const useAll = !!s.autoModIdentificationChecked;
     const activeList = useAll ? detectedModList.map(m => m.id) : (s.profiles?.[s.activeProfile] || []);
