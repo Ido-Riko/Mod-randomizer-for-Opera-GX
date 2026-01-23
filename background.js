@@ -596,8 +596,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           if (pendingRandomization) {
             // Try to send; if popup isn't actively listening, storage fallback remains.
             try {
-              chrome.runtime.sendMessage({ action: 'randomizationCompleted', enabledExtension: pendingRandomization.enabledExtension });
-              console.log('popupOpened -> sent runtime randomizationCompleted to popup');
+              chrome.runtime.sendMessage({ action: 'randomizationCompleted', enabledExtension: pendingRandomization.enabledExtension }, () => {
+                // Suppress 'Receiving end does not exist' if popup closed immediately
+                if (chrome.runtime.lastError) {
+                  console.debug('popupOpened: sendMessage ignored (popup likely closed)', chrome.runtime.lastError.message);
+                } else {
+                  console.log('popupOpened -> sent runtime randomizationCompleted to popup');
+                }
+              });
             } catch (e) {
               console.debug('popupOpened: runtime.sendMessage likely no listener; popup will read from storage.', e && e.message);
             }
