@@ -133,19 +133,27 @@ async function ensureDefaults() {
 
 const CATALOG_URL = 'https://raw.githubusercontent.com/Ido-Riko/Mod-randomizer-for-Opera-GX/main/url-catalog.json';
 let catalog = {};
+let catalogLoadPromise = null;
+
 // Load catalog immediately on background startup
 loadCatalog();
 
 
 // Load static catalog on startup
 async function loadCatalog() {
-  try {
-    const res = await fetch(CATALOG_URL);
-    catalog = await res.json();
-    console.log('Catalog loaded:', Object.keys(catalog).length, 'mods');
-  } catch (err) {
-    console.error('Failed to load catalog:', err);
-  }
+  if (catalogLoadPromise) return catalogLoadPromise;
+
+  catalogLoadPromise = (async () => {
+    try {
+      const res = await fetch(CATALOG_URL);
+      catalog = await res.json();
+      console.log('Catalog loaded:', Object.keys(catalog).length, 'mods');
+    } catch (err) {
+      console.error('Failed to load catalog:', err);
+    }
+  })();
+
+  return catalogLoadPromise;
 }
 
 // Function to get a mod URL by name
@@ -233,7 +241,7 @@ async function addDetectedModsToAllProfiles(autoIdentify /* randomizeAllMods */)
 }
 // ---------- Randomization ----------
 // ---------------------- handleModEnableWorkflow ----------------------
-async function handleModEnableWorkflow(modIdsForRandomization, source) {
+async function handleModEnableWorkflow(modIdsForRandomization, source, specificModId = null) {
   // This function should only be used when enabling mods.
   // It disables all mods in profile.
   // Then, if source is manual, and if open mods tab is on, show redirect message and then redirect. (Redirect message is in popup.js)
@@ -245,7 +253,7 @@ async function handleModEnableWorkflow(modIdsForRandomization, source) {
   // If notifications are off, but open mods tab is on, redirect after 3 seconds without a notification
   // If notifications are off and open mods tab is off, don't redirect, and don't create a notification.
 
-  console.log(`[handleModEnableWorkflow] Starting workflow. Mods:`, modIdsForRandomization, `source:`, source);
+  console.log(`[handleModEnableWorkflow] Starting workflow. Mods:`, modIdsForRandomization, `source:`, source, `specificModId:`, specificModId);
 
   if (!modIdsForRandomization || modIdsForRandomization.length === 0) {
     console.warn('[handleModEnableWorkflow] No mods to randomize');
@@ -265,12 +273,24 @@ async function handleModEnableWorkflow(modIdsForRandomization, source) {
   const currentlyEnabled = mods.filter(m => m.enabled);
   await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
 
-  // Pick new candidate (not last enabled)
-  const candidates = mods.filter(m => m.id !== lastEnabled);
-  if (!candidates.length) return null;
+  let selected;
+  if (specificModId) {
+    selected = mods.find(m => m.id === specificModId);
+    if (!selected) {
+      console.warn(`[handleModEnableWorkflow] Specific mod ID ${specificModId} not found in available mods, falling back to random`);
+    } else {
+      console.log(`[handleModEnableWorkflow] Using specific mod: ${selected.name}`);
+    }
+  }
 
-  const selected = candidates[Math.floor(Math.random() * candidates.length)];
-  console.log(`[handleModEnableWorkflow] Selected mod: ${selected.name} (id: ${selected.id})`);
+  if (!selected) {
+    // Pick new candidate (not last enabled)
+    const candidates = mods.filter(m => m.id !== lastEnabled);
+    if (!candidates.length) return null;
+
+    selected = candidates[Math.floor(Math.random() * candidates.length)];
+    console.log(`[handleModEnableWorkflow] Selected mod: ${selected.name} (id: ${selected.id})`);
+  }
 
   // Enable the selected mod
   await management.setEnabled(selected.id, true);
@@ -345,6 +365,11 @@ async function executeRandomization(source = 'unknown') {
   // if notifications aren't on, call handleEnableWorkFlow as if uninstall is off. and don't create any notification.
   console.log(`[executeRandomization] Source: ${source}`);
   try {
+    // Wait for catalog to load to prevent missing URLs on startup/alarm
+    if (catalogLoadPromise) {
+      await catalogLoadPromise;
+    }
+
     const s = await storage.get([
       'profiles',
       'activeProfile',
@@ -388,9 +413,9 @@ async function executeRandomization(source = 'unknown') {
       const reinstallUrl = await getModUrlByName(selected.name);
 
       if (!reinstallUrl) {
-        // URL missing: call handleModEnableWorkflow to enable instead
-        console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow');
-        const result = await handleModEnableWorkflow(activeList, source);
+        // URL missing: call handleModEnableWorkflow to enable instead, BUT USE THE SAME MOD
+        console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow with specific ID');
+        const result = await handleModEnableWorkflow(activeList, source, selected.id);
 
         if (result && source === 'manual') {
           const pending = { enabledExtension: result, timestamp: nowMs() };
@@ -446,7 +471,7 @@ async function executeRandomization(source = 'unknown') {
           } else {
             // Notifications off: call handleModEnableWorkflow as if uninstall is off
             console.log('[executeRandomization] Notifications off, calling handleModEnableWorkflow');
-            return await handleModEnableWorkflow(activeList, source);
+            return await handleModEnableWorkflow(activeList, source, selected.id);
           }
         }
       }
