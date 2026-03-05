@@ -467,17 +467,18 @@ async function executeRandomization(source = 'unknown') {
     return null;
   }
 }
-// Handle notification clicks - only for uninstall mode
+// Handle notification clicks
 chrome.notifications.onClicked.addListener((notificationId) => {
   if (notificationId === 'modRandomizerAlert') {
     // Use callback-based storage to preserve user gesture synchronously
     chrome.storage.local.get('pendingNotification', (result) => {
       const pendingNotification = result.pendingNotification;
-      if (!pendingNotification) return;
 
-      // Only handle uninstall mode clicks (enable mode notification is informational only)
-      if (!pendingNotification.uninstallMode) {
-        console.log('Notification clicked but enable mode - no action needed');
+      // If it's an enable mode click (no pending notification, or not uninstall mode), open mods tab
+      if (!pendingNotification || !pendingNotification.uninstallMode) {
+        console.log('Notification clicked for enable mode - redirecting to mods tab');
+        chrome.tabs.create({ url: 'opera://configure/mods/manage' });
+        chrome.notifications.clear(notificationId);
         return;
       }
 
