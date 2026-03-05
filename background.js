@@ -389,10 +389,14 @@ async function executeRandomization(source = 'unknown') {
     }
 
     // Prevent back-to-back automatic randomizations within 1 minute
+    // Make an exception if the user is explicitly testing with a 0.25 min interval.
     if (source !== 'manual') {
+      const { randomizeTime = 0 } = await storage.get('randomizeTime');
+      const throttleMs = randomizeTime === 0.25 ? 10 * 1000 : 60 * 1000;
+
       const lastRandomTime = s.lastRandomizationTime || 0;
-      if (nowMs() - lastRandomTime < 60 * 1000) {
-        console.warn(`[executeRandomization] Skipping automatic randomization (${source}); executed less than 1 minute ago.`);
+      if (nowMs() - lastRandomTime < throttleMs) {
+        console.warn(`[executeRandomization] Skipping automatic randomization (${source}); executed less than ${throttleMs / 1000} seconds ago.`);
         return null;
       }
     }
