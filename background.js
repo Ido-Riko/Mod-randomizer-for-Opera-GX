@@ -364,6 +364,10 @@ async function executeRandomization(source = 'unknown') {
   // If the url isn't missing, do the same flow of disabling mods in profile, then if notifications are on, create notification for uninstall.
   // if notifications aren't on, call handleEnableWorkFlow as if uninstall is off. and don't create any notification.
   console.log(`[executeRandomization] Source: ${source}`);
+
+  // Clear any existing pending notification, because a new randomization overrides the old one.
+  await storage.remove('pendingNotification');
+
   try {
     // Wait for catalog to load to prevent missing URLs on startup/alarm
     if (catalogLoadPromise) {
@@ -378,7 +382,8 @@ async function executeRandomization(source = 'unknown') {
       'openModsTabChecked',
       'showNotificationsChecked',
       'lastEnabledModId',
-      'toggleRandomizeOnSetTimeChecked'
+      'toggleRandomizeOnSetTimeChecked',
+      'lastRandomizationTime'
     ]);
 
     // Guard: If triggered by alarm but the feature is disabled, abort and clean up.
@@ -386,6 +391,15 @@ async function executeRandomization(source = 'unknown') {
       console.warn('[executeRandomization] Alarm fired but toggleRandomizeOnSetTimeChecked is OFF. Aborting and clearing alarm.');
       chrome.alarms.clear('randomizeAlarm');
       return null;
+    }
+
+    // Prevent back-to-back automatic randomizations within 1 minute
+    if (source !== 'manual') {
+      const lastRandomTime = s.lastRandomizationTime || 0;
+      if (nowMs() - lastRandomTime < 60 * 1000) {
+        console.warn(`[executeRandomization] Skipping automatic randomization (${source}); executed less than 1 minute ago.`);
+        return null;
+      }
     }
 
     const { detectedModList = [] } = await storage.get('detectedModList');
@@ -396,6 +410,9 @@ async function executeRandomization(source = 'unknown') {
       console.warn('[executeRandomization] No mods to randomize');
       return null;
     }
+
+    // Update last randomization time here, right before modifying extensions.
+    await storage.set({ lastRandomizationTime: nowMs() });
 
     // Check if uninstall is on
     if (s.uninstallAndReinstallChecked) {
@@ -534,8 +551,13 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 // Clean up on notification dismiss
 chrome.notifications.onClosed.addListener(async (notificationId) => {
   if (notificationId === 'modRandomizerAlert') {
-    await storage.remove('pendingNotification');
-    console.log('Notification dismissed, cleared pending action');
+    const s = await storage.get('pendingNotification');
+    if (s.pendingNotification && s.pendingNotification.uninstallMode) {
+      console.log('Notification dismissed, keeping pendingNotification in storage for popup fallback.');
+    } else {
+      await storage.remove('pendingNotification');
+      console.log('Notification dismissed, cleared pending action');
+    }
   }
 });
 // ---------- Alarms & Scheduling ----------

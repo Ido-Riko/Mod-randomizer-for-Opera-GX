@@ -173,6 +173,40 @@ export function removeRedirectMessage() {
     removeMessageAreasIfEmpty();
 }
 
+export function showMissedNotificationMessage(mod, onReinstallCallback) {
+    const { redirectArea } = ensureMessageAreas();
+    redirectArea.innerHTML = '';
+
+    const container = document.createElement('div');
+    container.className = 'missed-notification';
+    container.style.display = 'flex';
+    container.style.alignItems = 'center';
+    container.style.justifyContent = 'center';
+    container.style.gap = '10px';
+    container.style.marginTop = '8px';
+    container.style.marginBottom = '8px';
+
+    const text = document.createElement('span');
+    text.textContent = 'Missed notification?';
+    text.style.color = 'var(--text-color)';
+    text.style.fontSize = '0.9em';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Reinstall';
+    btn.className = 'modal-btn modal-btn-primary';
+    btn.style.padding = '4px 12px';
+    btn.style.fontSize = '0.9em';
+    btn.onclick = () => {
+        onReinstallCallback();
+    };
+
+    container.appendChild(text);
+    container.appendChild(btn);
+    redirectArea.appendChild(container);
+    ensureTempSeparator();
+}
+
 // --- Import Results Modal ---
 export async function showImportResults(results) {
     const overlay = document.getElementById('modalOverlay');

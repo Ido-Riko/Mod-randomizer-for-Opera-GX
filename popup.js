@@ -6,7 +6,7 @@ import {
 import {
     initEls, getEls, renderExtensionList, triggerManualSave,
     showModMessage, clearEnabledMessage, showRedirectMessage, removeRedirectMessage,
-    showError, showImportResults, getRenderLock
+    showError, showImportResults, getRenderLock, showMissedNotificationMessage
 } from './modules/ui.js';
 import {
     loadAndRenderProfiles, exportProfiles, importProfiles,
@@ -71,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
             'autoModIdentificationChecked', 'uninstallAndReinstallChecked',
             'openModsTabChecked', 'showNotificationsChecked',
             'toggleRandomizeOnStartupChecked', 'toggleRandomizeOnSetTimeChecked',
-            'randomizeTime', 'timeUnit', 'currentMod'
+            'randomizeTime', 'timeUnit', 'currentMod', 'pendingNotification'
         ]);
 
         const randomizeAll = s.autoModIdentificationChecked === undefined ? false : !!s.autoModIdentificationChecked;
@@ -91,6 +91,32 @@ document.addEventListener('DOMContentLoaded', () => {
             els.timeInput.value = (s.randomizeTime === 0)
                 ? ''
                 : ((s.randomizeTime || s.randomizeTime === 0) ? fromMinutesFormat(s.randomizeTime, unit) : '');
+        }
+
+        const isUninstallOn = s.uninstallAndReinstallChecked === undefined ? true : !!s.uninstallAndReinstallChecked;
+        if (s.pendingNotification && s.pendingNotification.uninstallMode && isUninstallOn) {
+            const mod = {
+                id: s.pendingNotification.modId,
+                name: s.pendingNotification.modName,
+                reinstallUrl: s.pendingNotification.reinstallUrl
+            };
+            await showModMessage(mod, true);
+            showMissedNotificationMessage(mod, () => {
+                chrome.tabs.create({ url: mod.reinstallUrl });
+                chrome.management.uninstall(mod.id, { showConfirmDialog: true }, async () => {
+                    if (chrome.runtime.lastError) {
+                        if (isSidebar) setTimeout(clearEnabledMessage, 500);
+                    } else {
+                        chrome.storage.local.remove('pendingNotification');
+                        if (isSidebar) {
+                            clearEnabledMessage();
+                            removeRedirectMessage();
+                        } else {
+                            window.close();
+                        }
+                    }
+                });
+            });
         }
 
         await loadAndRenderProfiles();
@@ -381,6 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     els.randomizeButton.addEventListener('click', async () => {
         try {
+            chrome.storage.local.remove('pendingNotification');
             if (redirectTimeoutId) {
                 clearTimeout(redirectTimeoutId);
                 redirectTimeoutId = null;
