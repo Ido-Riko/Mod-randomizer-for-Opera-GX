@@ -238,7 +238,7 @@ async function addDetectedModsToAllProfiles(autoIdentify /* randomizeAllMods */)
 }
 // ---------- Randomization ----------
 // ---------------------- handleModEnableWorkflow ----------------------
-async function handleModEnableWorkflow(modIdsForRandomization, source, specificModId = null) {
+async function handleModEnableWorkflow(modIdsForRandomization, source, specificModId = null, isUrlMissingFallback = false) {
   // This function should only be used when enabling mods.
   // It disables all mods in profile.
   // Then, if source is manual, and if open mods tab is on, show redirect message and then redirect. (Redirect message is in popup.js)
@@ -310,9 +310,10 @@ async function handleModEnableWorkflow(modIdsForRandomization, source, specificM
     if (notificationsOn) {
       // Create notification
       const notificationDelay = source === 'startup' ? 5000 : 500;
+      const messageBase = isUrlMissingFallback ? `URL missing - Enabled: ${selected.name}` : `Enabled: ${selected.name}`;
       const message = openModsTabOn
-        ? `Enabled: ${selected.name}\n\nRedirecting to mods tab...`
-        : `Enabled: ${selected.name}`;
+        ? `${messageBase}\n\nRedirecting to mods tab...`
+        : messageBase;
 
       setTimeout(() => {
         chrome.notifications.create('modRandomizerAlert', {
@@ -430,7 +431,7 @@ async function executeRandomization(source = 'unknown') {
       if (!reinstallUrl) {
         // URL missing: call handleModEnableWorkflow to enable instead, BUT USE THE SAME MOD
         console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow with specific ID');
-        const result = await handleModEnableWorkflow(activeList, source, selected.id);
+        const result = await handleModEnableWorkflow(activeList, source, selected.id, true);
 
         if (result && source === 'manual') {
           const pending = { enabledExtension: result, timestamp: nowMs() };
