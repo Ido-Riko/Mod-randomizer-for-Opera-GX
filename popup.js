@@ -360,7 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
             await sendMsg('toggleRandomizeOnSetTimeChecked', { value: inputEl.checked });
         }
         if (key === 'uninstallAndReinstallChecked' && !inputEl.checked) {
-            removeRedirectMessage();
+            chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
         }
     }
 
