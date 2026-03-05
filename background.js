@@ -35,25 +35,22 @@ function nowMs() { return Date.now(); }
 
 // ---------- Port-based delivery ----------
 async function tryDeliverToPopup(message) {
-  if (popupPort) {
-    try {
-      popupPort.postMessage(message);
-      console.log('Delivered to popup via port:', message.action);
-      return true;
-    } catch (e) {
-      console.warn('Port delivery failed, clearing popupPort', e);
-      popupPort = null;
-    }
-  }
+  // Broadcast to all open UI instances (popup/sidebar)
   return new Promise(resolve => {
+    if (popupPort) {
+      try {
+        popupPort.postMessage(message);
+      } catch (e) {
+        popupPort = null;
+      }
+    }
+
+    // Always attempt runtime broadcast so SIDEBAR hears it even if POPUP grabbed the port
     chrome.runtime.sendMessage(message, (res) => {
       if (chrome.runtime.lastError) {
         console.debug('runtime.sendMessage fallback failed', chrome.runtime.lastError.message);
-        resolve(false);
-      } else {
-        console.log('runtime.sendMessage fallback returned, may not be consumed');
-        resolve(true);
       }
+      resolve(true); // Don't rely on response
     });
   });
 }
@@ -365,9 +362,6 @@ async function executeRandomization(source = 'unknown') {
   // if notifications aren't on, call handleEnableWorkFlow as if uninstall is off. and don't create any notification.
   console.log(`[executeRandomization] Source: ${source}`);
 
-  // Clear any existing pending notification, because a new randomization overrides the old one.
-  await storage.remove('pendingNotification');
-
   try {
     // Wait for catalog to load to prevent missing URLs on startup/alarm
     if (catalogLoadPromise) {
@@ -410,6 +404,10 @@ async function executeRandomization(source = 'unknown') {
       console.warn('[executeRandomization] No mods to randomize');
       return null;
     }
+
+    // Clear any existing pending notification, because a new randomization overrides the old one.
+    // We only clear it if we actually proceed with randomization past the throttles.
+    await storage.remove('pendingNotification');
 
     // Update last randomization time here, right before modifying extensions.
     await storage.set({ lastRandomizationTime: nowMs() });
@@ -473,6 +471,16 @@ async function executeRandomization(source = 'unknown') {
               }
             });
 
+            // Also deliver to popup/sidebar if it's currently open
+            tryDeliverToPopup({
+              action: 'showMissedNotification',
+              mod: {
+                id: selected.id,
+                name: selected.name,
+                reinstallUrl: reinstallUrl
+              }
+            });
+
             setTimeout(() => {
               chrome.notifications.create('modRandomizerAlert', {
                 type: 'basic',
@@ -482,6 +490,11 @@ async function executeRandomization(source = 'unknown') {
                 requireInteraction: true
               });
               console.log(`[executeRandomization] Uninstall notification created for ${selected.name}`);
+
+              // Auto-clear notification after 15 seconds so it doesn't linger forever
+              setTimeout(() => {
+                chrome.notifications.clear('modRandomizerAlert');
+              }, 15000);
             }, notificationDelay);
 
             return null;
@@ -528,6 +541,9 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 
       // Clear notification immediately
       chrome.notifications.clear(notificationId);
+
+      // Also hide it in any open popup/sidebar
+      tryDeliverToPopup({ action: 'hideMissedNotification' });
 
       // Trigger uninstall IMMEDIATELY using this click event (user gesture) - MUST be synchronous
       chrome.management.uninstall(pendingNotification.modId, { showConfirmDialog: true }, () => {
@@ -788,6 +804,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
           await storage.set({ activeProfile: name });
           console.log('Active profile set to', name);
+          sendResponse({ status: 'success' });
+          break;
+        }
+
+        case 'clearMissedNotification': {
+          console.log('Clearing missed notification across UI and OS');
+          await storage.remove('pendingNotification');
+          chrome.notifications.clear('modRandomizerAlert');
+          tryDeliverToPopup({ action: 'hideMissedNotification' });
           sendResponse({ status: 'success' });
           break;
         }

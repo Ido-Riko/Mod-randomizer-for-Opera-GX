@@ -19,7 +19,42 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Initialize Elements
     const els = initEls();
 
-    // 2. Listen for messages from background (Port)
+    // 2. Listen for messages from background (Port and Runtime)
+    chrome.runtime.onMessage.addListener((msg) => {
+        if (!msg || !msg.action) return;
+
+        if (msg.action === 'hideMissedNotification') {
+            console.log('Sidebar/Popup received hideMissedNotification via runtime');
+            chrome.storage.local.remove('pendingNotification');
+            clearEnabledMessage();
+            removeRedirectMessage();
+        }
+
+        if (msg.action === 'showMissedNotification' && msg.mod) {
+            console.log('Sidebar/Popup received showMissedNotification via runtime');
+            chrome.storage.local.get('uninstallAndReinstallChecked', async (s) => {
+                const isUninstallOn = s.uninstallAndReinstallChecked === undefined ? true : !!s.uninstallAndReinstallChecked;
+                if (isUninstallOn) {
+                    clearEnabledMessage();
+                    removeRedirectMessage();
+
+                    await showModMessage(msg.mod, true);
+                    showMissedNotificationMessage(msg.mod, () => {
+                        chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
+                        chrome.tabs.create({ url: msg.mod.reinstallUrl });
+                        chrome.management.uninstall(msg.mod.id, { showConfirmDialog: true }, () => {
+                            if (chrome.runtime.lastError) {
+                                if (isSidebar) setTimeout(clearEnabledMessage, 500);
+                            } else {
+                                if (!isSidebar) window.close();
+                            }
+                        });
+                    });
+                }
+            });
+        }
+    });
+
     port.onMessage.addListener(async (msg) => {
         if (!msg || !msg.action) return;
 
@@ -30,6 +65,38 @@ document.addEventListener('DOMContentLoaded', () => {
             if (msg.pendingId) {
                 port.postMessage({ action: 'randomizationAck', pendingId: msg.pendingId });
             }
+        }
+
+        if (msg.action === 'showMissedNotification' && msg.mod) {
+            console.log('Sidebar/Popup received showMissedNotification via port/runtime');
+            const s = await chrome.storage.local.get('uninstallAndReinstallChecked');
+            const isUninstallOn = s.uninstallAndReinstallChecked === undefined ? true : !!s.uninstallAndReinstallChecked;
+            if (isUninstallOn) {
+                clearEnabledMessage();
+                removeRedirectMessage();
+
+                await showModMessage(msg.mod, true);
+                showMissedNotificationMessage(msg.mod, () => {
+                    chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
+                    chrome.tabs.create({ url: msg.mod.reinstallUrl });
+                    chrome.management.uninstall(msg.mod.id, { showConfirmDialog: true }, async () => {
+                        if (chrome.runtime.lastError) {
+                            if (isSidebar) setTimeout(clearEnabledMessage, 500);
+                        } else {
+                            if (!isSidebar) {
+                                window.close();
+                            }
+                        }
+                    });
+                });
+            }
+        }
+
+        if (msg.action === 'hideMissedNotification') {
+            console.log('Sidebar/Popup received hideMissedNotification via port/runtime');
+            chrome.storage.local.remove('pendingNotification');
+            clearEnabledMessage();
+            removeRedirectMessage();
         }
 
         if (msg.action === 'extensionsUpdated') {
@@ -102,16 +169,13 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             await showModMessage(mod, true);
             showMissedNotificationMessage(mod, () => {
+                chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
                 chrome.tabs.create({ url: mod.reinstallUrl });
                 chrome.management.uninstall(mod.id, { showConfirmDialog: true }, async () => {
                     if (chrome.runtime.lastError) {
                         if (isSidebar) setTimeout(clearEnabledMessage, 500);
                     } else {
-                        chrome.storage.local.remove('pendingNotification');
-                        if (isSidebar) {
-                            clearEnabledMessage();
-                            removeRedirectMessage();
-                        } else {
+                        if (!isSidebar) {
                             window.close();
                         }
                     }
@@ -408,6 +472,7 @@ document.addEventListener('DOMContentLoaded', () => {
     els.randomizeButton.addEventListener('click', async () => {
         try {
             chrome.storage.local.remove('pendingNotification');
+            chrome.notifications.clear('modRandomizerAlert');
             if (redirectTimeoutId) {
                 clearTimeout(redirectTimeoutId);
                 redirectTimeoutId = null;

@@ -188,7 +188,7 @@ export function showMissedNotificationMessage(mod, onReinstallCallback) {
 
     const text = document.createElement('span');
     text.textContent = 'Missed notification?';
-    text.style.color = 'var(--text-color)';
+    text.style.color = 'var(--accent)';
     text.style.fontSize = '0.9em';
 
     const btn = document.createElement('button');
