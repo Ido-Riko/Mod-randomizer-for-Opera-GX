@@ -1,5 +1,5 @@
 import { escapeHtml } from './utils.js';
-import { storageGet, storageSet, sendMsg } from './api.js';
+import { storageGet, sendMsg } from './api.js';
 
 // DOM elements cache (elements that are always present)
 // We export this so we can access them if needed, but primarily used internally
@@ -110,9 +110,6 @@ export function clearEnabledMessage() {
     removeMessageAreasIfEmpty();
 }
 
-let autoClearTimerId = null;
-let redirectTimeoutId = null;
-let redirectIntervalId = null;
 let lastRenderSignature = null;
 
 function clearRedirectIntervalInArea(redirectArea) {
@@ -200,7 +197,7 @@ export function showMissedNotificationMessage(mod, onReinstallCallback) {
     container.style.marginBottom = '8px';
 
     const text = document.createElement('span');
-    text.textContent = 'Missed notification?';
+    text.textContent = 'Ready to reinstall';
     text.style.color = 'var(--accent)';
     text.style.fontSize = '1em';
 
@@ -287,9 +284,8 @@ export async function showImportResults(results) {
 }
 
 // --- Extension List Rendering ---
+let renderGeneration = 0;
 let renderLock = false; // prevents mid-save re-renders
-let manualSaveDebounce = null;
-let pendingSaveProfile = null;
 let currentProfileName = null; // Tracked internally or passed in
 
 export function setRenderLock(val) { renderLock = val; }
@@ -303,13 +299,14 @@ export function setOnManualCheckboxChangeCallback(cb) {
 
 export async function renderExtensionList(forceProfileName = null) {
     if (renderLock) return;
+    const generation = ++renderGeneration;
 
     // fetch everything
     const resp = await sendMsg('getExtensions');
 
     const settings = await storageGet(['autoModIdentificationChecked', 'profilesOrder']);
     const randomizeAll = settings.autoModIdentificationChecked === undefined
-        ? true
+        ? false
         : !!settings.autoModIdentificationChecked;
 
     // Sync toggle UI if needed
@@ -337,6 +334,7 @@ export async function renderExtensionList(forceProfileName = null) {
     const active = forceProfileName
         || (resp?.activeProfile || (await storageGet('activeProfile')).activeProfile || Object.keys(profiles)[0] || 'Default');
 
+    if (renderLock || generation !== renderGeneration) return;
     currentProfileName = active;
 
     els.extensionList.dataset.profile = active;
@@ -345,10 +343,7 @@ export async function renderExtensionList(forceProfileName = null) {
 
     // profilesOrder
     let profilesOrder = settings.profilesOrder || {};
-    if (!profilesOrder[active]) {
-        profilesOrder[active] = [...profileList];
-        await storageSet({ profilesOrder });
-    }
+    if (!profilesOrder[active]) profilesOrder[active] = [...profileList];
 
     // Build display order
     const order = profilesOrder[active].slice();
@@ -377,46 +372,13 @@ export async function renderExtensionList(forceProfileName = null) {
         return;
     }
 
+    if (renderLock || generation !== renderGeneration) return;
     // Render
     els.extensionList.innerHTML = '';
     els.extensionList.classList.toggle('disabled', randomizeAll);
 
-    // Helper for checkbox change
-    const handleCheckboxChange = async () => {
-        // Debounce logic moved here or in popup?
-        // Let's implement debounce here as it was in popup
-        renderLock = true;
-        if (manualSaveDebounce) clearTimeout(manualSaveDebounce);
-
-        pendingSaveProfile = els.extensionList.dataset.profile || currentProfileName || 'Default';
-
-        manualSaveDebounce = setTimeout(async () => {
-            const checkedIds = Array.from(els.extensionList.querySelectorAll('input[type="checkbox"]'))
-                .filter(cb => cb.checked)
-                .map(cb => cb.dataset.extid);
-
-            const activeForSave = pendingSaveProfile;
-
-            // Update order
-            const st = await storageGet('profilesOrder');
-            const pOrder = st.profilesOrder || {};
-            pOrder[activeForSave] = pOrder[activeForSave] || [];
-
-            let changed = false;
-            for (const id of checkedIds) {
-                if (!pOrder[activeForSave].includes(id)) { pOrder[activeForSave].push(id); changed = true; }
-            }
-            if (changed) {
-                await storageSet({ profilesOrder: pOrder });
-            }
-
-            const saveRes = await sendMsg('saveModExtensionIds', { modExtensionIds: checkedIds, profileName: activeForSave });
-            console.log(`Saved ${checkedIds.length} mods to profile "${activeForSave}"`);
-
-            pendingSaveProfile = null;
-            setTimeout(() => { renderLock = false; }, 100);
-        }, 120);
-    };
+    const handleCheckboxChange = () => triggerManualSave();
+    renderedSelection = new Set(profileList);
 
     for (const id of sortedOrder) {
         let name = detectedMap.get(id);
@@ -459,42 +421,27 @@ export async function renderExtensionList(forceProfileName = null) {
     return { handleCheckboxChange };
 }
 
-// We expose the last created handleCheckboxChange so bulk toggles can use it
-// But since handleCheckboxChange is scoped per render, we need a way to invoke the logic.
-// Simpler: Duplicate the logic or expose a shared saver function.
-// Let's expose `triggerManualSave` which does the debounce logic.
-
-export async function triggerManualSave() {
-    // Reuse the logic inside renderExtensionList's handler
-    // We can just query selector logic again
+// Save deltas, not whole stale profile snapshots, so two open views can edit safely.
+let renderedSelection = new Set();
+let saveQueue = Promise.resolve();
+export function triggerManualSave() {
+    if (els.extensionList.classList.contains('disabled')) return Promise.resolve();
+    const profileName = els.extensionList.dataset.profile || currentProfileName;
+    const checked = new Set(Array.from(els.extensionList.querySelectorAll('input[type="checkbox"]'))
+        .filter(cb => cb.checked).map(cb => cb.dataset.extid));
+    const changes = {};
+    for (const id of new Set([...renderedSelection, ...checked])) {
+        if (renderedSelection.has(id) !== checked.has(id)) changes[id] = checked.has(id);
+    }
+    renderedSelection = checked;
     renderLock = true;
-    if (manualSaveDebounce) clearTimeout(manualSaveDebounce);
-
-    pendingSaveProfile = els.extensionList.dataset.profile || currentProfileName || 'Default';
-
-    manualSaveDebounce = setTimeout(async () => {
-        const checkedIds = Array.from(els.extensionList.querySelectorAll('input[type="checkbox"]'))
-            .filter(cb => cb.checked)
-            .map(cb => cb.dataset.extid);
-
-        const activeForSave = pendingSaveProfile;
-
-        const st = await storageGet('profilesOrder');
-        const pOrder = st.profilesOrder || {};
-        pOrder[activeForSave] = pOrder[activeForSave] || [];
-
-        let changed = false;
-        for (const id of checkedIds) {
-            if (!pOrder[activeForSave].includes(id)) { pOrder[activeForSave].push(id); changed = true; }
-        }
-        if (changed) {
-            await storageSet({ profilesOrder: pOrder });
-        }
-
-        await sendMsg('saveModExtensionIds', { modExtensionIds: checkedIds, profileName: activeForSave });
-        console.log(`Saved ${checkedIds.length} mods to profile "${activeForSave}"`);
-
-        pendingSaveProfile = null;
-        setTimeout(() => { renderLock = false; }, 100);
-    }, 120);
+    const save = saveQueue.then(() => sendMsg('saveModExtensionIds', { profileName, changes }));
+    saveQueue = save.catch(error => showError(error.message));
+    const currentQueue = saveQueue;
+    return saveQueue.finally(async () => {
+        if (saveQueue !== currentQueue) return;
+        renderLock = false;
+        lastRenderSignature = null;
+        await renderExtensionList();
+    });
 }
