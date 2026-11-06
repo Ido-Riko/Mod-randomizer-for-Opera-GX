@@ -9,6 +9,7 @@ export function initEls() {
     els.profileSelect = document.getElementById('profileSelect');
     els.newProfileBtn = document.getElementById('newProfileBtn');
     els.deleteProfileBtn = document.getElementById('deleteProfileBtn');
+    els.shuffleBagToggle = document.getElementById('shuffleBag');
     els.autoModToggle = document.getElementById('randomizeAllMods');
     els.disableOutsideProfileToggle = document.getElementById('disableModsOutsideProfile');
     els.openModsToggle = document.getElementById('uninstallAndReinstall');
@@ -445,3 +446,4 @@ export function triggerManualSave() {
         await renderExtensionList();
     });
 }
+

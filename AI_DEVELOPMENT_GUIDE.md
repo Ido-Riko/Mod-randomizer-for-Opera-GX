@@ -47,7 +47,10 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 - `knownDetectedIds` (Array): Tracks mods we have already acknowledged to prevent indiscriminately toggling newly installed mods on across all profiles if "Randomize all mods" is off.
 - `recentlyUninstalled` (Object): Map of `ModID` -> `{ timestamp, name }` for the grace period.
 
+- `shuffleBags` (Object): Maps JSON-encoded profile/all-mods keys to IDs already drawn this cycle. Only the worker writes it; successful selections consume one draw in either enable or reinstall mode. Renames preserve progress, deletion removes it, and toggling shuffle clears bags.
+
 **Toggle States:**
+- `shuffleBagChecked` (Shuffle bag; defaults to true, including missing keys)
 - `autoModIdentificationChecked` (Randomize all mods)
 - `uninstallAndReinstallChecked` (Uninstall and reinstall workflow)
 - `openModsTabChecked` (Open mods tab)
@@ -72,3 +75,4 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 
 ## 6. Tests
 Run `npm test` (Node.js 22+, no dependencies). See `TESTING.md` for native Opera GX checks. Mocks verify call ordering but cannot certify browser user-gesture enforcement.
+
