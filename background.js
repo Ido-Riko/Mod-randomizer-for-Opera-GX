@@ -394,6 +394,122 @@ async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, so
   return null;
 }
 
+// Manual clicks need a ready target: uninstall cannot follow asynchronous work.
+// Preparing only reserves a draw; successful uninstall/enable commits it later.
+const MANUAL_SETTINGS = [
+  'profiles', 'activeProfile', 'autoModIdentificationChecked',
+  'uninstallAndReinstallChecked', 'shuffleBagChecked', 'shuffleBags',
+  'lastEnabledModId', 'disableModsOutsideProfileChecked'
+];
+async function manualContext() {
+  const settings = await storage.get(MANUAL_SETTINGS);
+  const useAll = !!settings.autoModIdentificationChecked;
+  const all = await management.getAll();
+  const activeList = useAll
+    ? all.filter(mod => mod.updateUrl === 'https://api.gx.me/store/mods/update').map(mod => mod.id)
+    : settings.profiles?.[settings.activeProfile] || [];
+  const mods = all.filter(mod => activeList.includes(mod.id));
+  const bagKey = shuffleBagKey(settings.activeProfile, useAll);
+  const before = settings.shuffleBags?.[bagKey] || [];
+  const fingerprint = JSON.stringify([
+    settings.activeProfile, useAll, settings.uninstallAndReinstallChecked !== false,
+    settings.shuffleBagChecked !== false, settings.lastEnabledModId,
+    !!settings.disableModsOutsideProfileChecked, [...activeList].sort(), before,
+    mods.map(mod => [mod.id, mod.name]).sort()
+  ]);
+  return { settings, useAll, activeList, mods, bagKey, before, fingerprint };
+}
+async function prepareManualRandomization() {
+  if (catalogLoadPromise) await catalogLoadPromise;
+  else if (Date.now() - lastCatalogAttempt > 60000) await loadCatalog();
+  const context = await manualContext();
+  const { settings, mods, bagKey, before, fingerprint, activeList, useAll } = context;
+  const { manualPlans = [], manualPlanSequence = 0 } = await storage.get(['manualPlans', 'manualPlanSequence']);
+  const cached = manualPlans.find(plan => plan.fingerprint === fingerprint && !plan.started);
+  if (cached) return cached;
+  const shuffleOn = settings.shuffleBagChecked !== false;
+  const draw = shuffleOn ? planShuffleDraw(mods, before, settings.lastEnabledModId) : null;
+  const selected = shuffleOn ? draw?.selected : await pickNextMod(mods, null, settings.lastEnabledModId);
+  if (!selected) return null;
+  const reinstallUrl = settings.uninstallAndReinstallChecked !== false ? getModUrlByName(selected.name) : null;
+  const plan = {
+    token: manualPlanSequence + 1,
+    id: selected.id, name: selected.name,
+    reinstallUrl: validReinstallMod({ ...selected, reinstallUrl }) ? reinstallUrl : null,
+    fingerprint, bagKey, before, after: draw?.seen || [],
+    shuffleOn, profileName: settings.activeProfile, useAll, activeList,
+    disableOutside: !!settings.disableModsOutsideProfileChecked
+  };
+  // Keep in-flight confirmations when other views prepare a newer candidate.
+  const retained = manualPlans.filter(plan => plan.started || plan.fingerprint !== fingerprint).slice(-15);
+  await storage.set({ manualPlans: [...retained, plan], manualPlanSequence: plan.token });
+  return plan;
+}
+async function beginManualRandomization(token) {
+  const { manualPlans = [] } = await storage.get('manualPlans');
+  const plan = manualPlans.find(plan => plan.token === token);
+  if (!plan) return; // A synchronous completion may have already consumed it.
+  plan.started = true;
+  await storage.set({ manualPlans });
+  await clearPendingNotification();
+}
+async function cancelManualRandomization(token) {
+  const { manualPlans = [] } = await storage.get('manualPlans');
+  const plan = manualPlans.find(plan => plan.token === token);
+  if (plan) {
+    delete plan.started;
+    await storage.set({ manualPlans });
+  }
+}
+async function completeManualRandomization(token, uninstalled = true) {
+  const { manualPlans = [] } = await storage.get('manualPlans');
+  const plan = manualPlans.find(plan => plan.token === token);
+  if (!plan) return { status: 'success' }; // UI callback and management event are idempotent.
+  const all = await management.getAll();
+  if (uninstalled && !validReinstallMod(plan)) throw new Error('Invalid reinstall target.');
+  if (uninstalled && all.some(mod => mod.id === plan.id)) throw new Error('Mod has not been uninstalled.');
+  // Consume the reservation before tab creation; duplicate completion cannot reopen it.
+  const updates = { manualPlans: manualPlans.filter(item => item.token !== token) };
+  const s = await storage.get(['profiles', 'shuffleBagChecked', 'shuffleBags']);
+  if (plan.shuffleOn && s.shuffleBagChecked !== false && (plan.useAll || Object.hasOwn(s.profiles || {}, plan.profileName))) {
+    const bags = s.shuffleBags || {};
+    const current = bags[plan.bagKey] || [];
+    // If another switch happened meanwhile, merge this draw without rewinding its progress.
+    bags[plan.bagKey] = JSON.stringify(current) === JSON.stringify(plan.before)
+      ? plan.after : [...new Set([...current, plan.id])];
+    updates.shuffleBags = bags;
+  }
+  updates.lastEnabledModId = plan.id;
+  updates.currentMod = plan.name;
+  updates.lastRandomizationTime = nowMs();
+  await storage.set(updates);
+  if (uninstalled) {
+    // Removal can close the popup; the worker owns completion and store navigation.
+    chrome.tabs.create({ url: plan.reinstallUrl });
+    const disableIds = new Set(plan.activeList);
+    const others = all.filter(mod => mod.enabled && mod.updateUrl === 'https://api.gx.me/store/mods/update'
+      && (disableIds.has(mod.id) || (plan.disableOutside && !plan.useAll)));
+    await Promise.all(others.map(mod => management.setEnabled(mod.id, false)));
+  }
+  await clearPendingNotification(plan.id);
+  return { status: 'success' };
+}
+async function enablePreparedManualRandomization(token) {
+  const { manualPlans = [] } = await storage.get('manualPlans');
+  const plan = manualPlans.find(plan => plan.token === token);
+  if (!plan) throw new Error('Randomize is still preparing. Please try again.');
+  const current = await manualContext();
+  if (current.fingerprint !== plan.fingerprint) throw new Error('Mods or settings changed. Please try again.');
+  if (plan.reinstallUrl) throw new Error('Use the Randomize button to confirm uninstall.');
+  await clearPendingNotification();
+  if (plan.disableOutside && !plan.useAll) await disableModsOutsideActiveProfile(plan.activeList);
+  const result = await handleModEnableWorkflow(plan.activeList, 'manual', plan.id,
+    current.settings.uninstallAndReinstallChecked !== false);
+  if (result?.id !== plan.id) throw new Error('Selected mod is no longer available.');
+  await completeManualRandomization(token, false);
+  return result;
+}
+
 async function executeRandomization(source = 'unknown') {
   if (randomizationInProgress) return { status: 'error', message: 'A mod switch is already in progress.' };
   randomizationInProgress = true;
@@ -530,6 +646,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           break;
         }
         //This handles the direct, synchronous request from the popup's button.
+        case 'prepareManualRandomization': {
+          sendResponse(await prepareManualRandomization());
+          break;
+        }
+        case 'beginManualRandomization': {
+          await beginManualRandomization(message.token);
+          sendResponse({ status: 'success' });
+          break;
+        }
+        case 'cancelManualRandomization': {
+          await cancelManualRandomization(message.token);
+          sendResponse({ status: 'success' });
+          break;
+        }
+        case 'completeManualRandomization': {
+          sendResponse(await completeManualRandomization(message.token));
+          break;
+        }
+        case 'enablePreparedManualRandomization': {
+          sendResponse(await enablePreparedManualRandomization(message.token));
+          break;
+        }
         case 'getRandomMod': {
           console.log('Message: getRandomMod received (direct from popup)');
           // Always use executeRandomization for any randomization from background
@@ -843,6 +981,17 @@ const onInstalled = async (details) => {
 
 const onUninstalled = async (id) => {
   console.log('Mod uninstalled, tracking id:', id);
+
+  const { manualPlans = [] } = await storage.get('manualPlans');
+  const started = manualPlans.find(plan => plan.id === id && plan.started);
+  if (started) {
+    try { await completeManualRandomization(started.token); }
+    catch (error) {
+      console.error('Manual uninstall completion failed', error);
+      tryDeliverToPopup({ action: 'uninstallFailed', message: error.message });
+    }
+  }
+
 
   // Try to find the name from the existing detected list before updating it
   const st = await storage.get('detectedModList');

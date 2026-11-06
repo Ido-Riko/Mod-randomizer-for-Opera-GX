@@ -24,7 +24,7 @@ export function modFromNotificationId(id) {
 }
 
 const inFlight = new Set();
-export function uninstallFromGesture(mod, onComplete, api = chrome) {
+export function uninstallFromGesture(mod, onComplete, api = chrome, { openStore = true } = {}) {
     if (!validReinstallMod(mod)) { onComplete(new Error('Invalid reinstall target')); return; }
     if (inFlight.has(mod.id)) return;
     inFlight.add(mod.id);
@@ -34,7 +34,7 @@ export function uninstallFromGesture(mod, onComplete, api = chrome) {
             const error = api.runtime.lastError;
             inFlight.delete(mod.id);
             if (error) { onComplete(new Error(error.message)); return; }
-            api.tabs.create({ url: mod.reinstallUrl });
+            if (openStore) api.tabs.create({ url: mod.reinstallUrl });
             onComplete(null);
         });
     } catch (error) {
@@ -42,3 +42,4 @@ export function uninstallFromGesture(mod, onComplete, api = chrome) {
         onComplete(error);
     }
 }
+

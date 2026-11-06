@@ -3,7 +3,7 @@
 
 This is a mod randomizer for Opera GX, so you don't have to manually disable and then choose which mod to enable.
 
-Click Randomize to choose a mod. With uninstall/reinstall enabled, click the Reinstall button and accept Opera's confirmation; the store page opens after successful removal. With reinstall disabled, the mod is enabled normally.
+With uninstall/reinstall enabled, click **Randomize** to open Opera's uninstall confirmation immediately. Accept to open the selected mod's store page; cancelling leaves it installed and does not consume a shuffle draw. The button becomes available once the mod list is ready. With reinstall disabled (or a missing store URL), Randomize enables the mod normally.
 
 Reinstall enables all checkmarks, so it's recommended to keep it on.
 

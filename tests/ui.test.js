@@ -4,9 +4,9 @@ import vm from 'node:vm';
 import { environment, evaluate, element, flush, A, B, mod } from './helpers.js';
 import { uninstallFromGesture, validReinstallMod, notificationIdFor, modFromNotificationId } from '../modules/reinstall.js';
 
-function uiEnvironment(sidebar = false) {
+function uiEnvironment(sidebar = false, options = {}) {
     let gesture = false;
-    const env = environment({ data: { uninstallAndReinstallChecked: true }, requireGesture: true, gesture: () => gesture });
+    const env = environment({ ...options, data: { uninstallAndReinstallChecked: true, ...options.data }, requireGesture: true, gesture: () => gesture });
     const names = ['profileSelect','newProfileBtn','deleteProfileBtn','autoModToggle','shuffleBagToggle','disableOutsideProfileToggle','openModsToggle','openModsTabToggle','showNotificationsToggle','startupToggle','setTimeToggle','timeInput','timeUnit','randomizeButton','extensionList','searchBar','currentMod','message','toggleAllBtn','reverseAllBtn'];
     const els = Object.fromEntries(names.map(name => [name, element()]));
     const dom = new Map(); let ready, reinstallClick, closed = false;
@@ -19,7 +19,7 @@ function uiEnvironment(sidebar = false) {
         initEls: () => els, getEls: () => els, port: { onMessage: { addListener() {} } },
         storageGet: keys => env.chrome.storage.local.get(keys),
         storageSet: value => new Promise(resolve => env.chrome.storage.local.set(value, resolve)),
-        sendMsg: async (action, fields) => { messages.push({ action, ...fields }); const result = await env.message(action, fields); if (result?.status === 'error') throw new Error(result.message); return result; },
+        sendMsg: async (action, fields) => { env.calls.operations.push('message'); messages.push({ action, ...fields }); const result = await env.message(action, fields); if (result?.status === 'error') throw new Error(result.message); return result; },
         showModMessage() {}, clearEnabledMessage() {}, showRedirectMessage() {}, removeRedirectMessage() {},
         showMissedNotificationMessage(target, callback) { reinstallClick = callback; },
         showError: message => errors.push(message), customAlert: async message => errors.push(message),
@@ -30,29 +30,46 @@ function uiEnvironment(sidebar = false) {
     });
     evaluate('popup.js', context); ready();
     return { ...env, els, context, messages, errors, timers, get closed() { return closed; },
-        async randomize() { await els.randomizeButton.listeners.click(); },
+        randomize() { gesture = true; els.randomizeButton.listeners.click(); gesture = false; },
+        async acceptUninstall(index = env.calls.uninstall.length - 1, emitEvent = true) {
+            const call = env.calls.uninstall[index];
+            const modIndex = env.mods.findIndex(mod => mod.id === call.id);
+            if (modIndex >= 0) env.mods.splice(modIndex, 1);
+            if (emitEvent) await Promise.all(env.chrome.management.onUninstalled.emit(call.id));
+            call.cb(); await flush(); await flush();
+        },
         clickReinstall() { gesture = true; reinstallClick(); gesture = false; }
     };
 }
 for (const sidebar of [false, true]) {
-    test(`${sidebar ? 'sidebar' : 'popup'} offers reinstall and invokes uninstall synchronously on explicit click`, async () => {
-        const ui = uiEnvironment(sidebar); await flush(); await ui.randomize();
-        assert.equal(ui.calls.uninstall.length, 0, 'preparation must not uninstall');
-        ui.clickReinstall(); assert.equal(ui.calls.uninstall.length, 1);
+    test(`${sidebar ? 'sidebar' : 'popup'} Randomize starts uninstall synchronously on its first click`, async () => {
+        const ui = uiEnvironment(sidebar); await flush(); await flush();
+        assert.equal(ui.calls.uninstall.length, 0, 'opening the UI must not uninstall');
+        assert.equal(ui.calls.enabled.length, 0, 'preparation must not enable anything');
+        assert.equal(ui.data.shuffleBags, undefined, 'preparation must not consume a draw');
+        const operationStart = ui.calls.operations.length;
+        ui.randomize();
+        assert.equal(ui.calls.operations[operationStart], 'uninstall', 'no message or storage access may precede uninstall');
+        assert.equal(ui.calls.uninstall.length, 1);
         assert.equal(ui.calls.uninstall[0].config.showConfirmDialog, true);
         assert.equal(ui.calls.tabs.length, 0, 'store tab must wait for confirmation');
-        ui.calls.uninstall[0].cb(); await flush();
+        ui.randomize(); assert.equal(ui.calls.uninstall.length, 1, 'ignore double clicks');
+        await flush(); await ui.acceptUninstall();
+        assert.equal(ui.calls.tabs.length, 1, 'management event and UI completion must not open duplicate tabs');
         assert.equal(ui.calls.tabs[0].url, mod.reinstallUrl);
         assert.equal(ui.closed, !sidebar);
-        assert.equal(ui.data.pendingNotification, undefined);
+        assert.deepEqual(ui.data.shuffleBags[JSON.stringify(['profile', 'Default'])], [A]);
     });
-    test(`${sidebar ? 'sidebar' : 'popup'} cancellation keeps retry action and opens no tab`, async () => {
-        const ui = uiEnvironment(sidebar); await flush(); await ui.randomize(); ui.clickReinstall();
+    test(`${sidebar ? 'sidebar' : 'popup'} cancelled Randomize keeps its candidate and shuffle draw`, async () => {
+        const ui = uiEnvironment(sidebar); await flush(); await flush();
+        ui.randomize(); await flush();
         ui.chrome.runtime.lastError = { message: 'User cancelled' }; ui.calls.uninstall[0].cb(); delete ui.chrome.runtime.lastError;
+        await flush(); await flush();
         assert.equal(ui.calls.tabs.length, 0); assert.equal(ui.closed, false);
-        assert.equal(ui.data.pendingNotification.modId, A); assert.match(ui.errors.at(-1), /cancelled/);
-        ui.clickReinstall(); assert.equal(ui.calls.uninstall.length, 2);
-        ui.calls.uninstall[1].cb(); await flush();
+        assert.equal(ui.data.shuffleBags, undefined); assert.match(ui.errors.at(-1), /cancelled/);
+        ui.randomize(); assert.equal(ui.calls.uninstall.length, 2);
+        assert.equal(ui.calls.uninstall[1].id, A);
+        await flush(); await ui.acceptUninstall();
     });
 }
 test('timer 5 -> 0 -> 5 saves the restored interval', async () => {
@@ -115,7 +132,7 @@ test('real checkbox saver sends deltas immediately and reconciles rapid edits', 
     const context = vm.createContext({
         document: { getElementById: get, createElement: element, querySelector: () => element() },
         storageGet: keys => env.chrome.storage.local.get(keys),
-        sendMsg: async (action, fields) => { messages.push({ action, ...fields }); return env.message(action, fields); },
+        sendMsg: async (action, fields) => { env.calls.operations.push('message'); messages.push({ action, ...fields }); return env.message(action, fields); },
         setTimeout() {}, clearTimeout() {}, console: { log() {} }
     });
     evaluate('modules/ui.js', context); context.initEls(); await context.renderExtensionList();
@@ -140,3 +157,31 @@ for (const sidebar of [false, true]) {
         assert.equal(ui.els.shuffleBagToggle.checked, true);
     });
 }
+
+test('Randomize stays disabled until its candidate has finished preparing', async () => {
+    const ui = uiEnvironment();
+    assert.equal(ui.els.randomizeButton.disabled, true);
+    ui.randomize(); assert.equal(ui.calls.uninstall.length, 0);
+    await flush(); await flush();
+    assert.equal(ui.els.randomizeButton.disabled, false);
+    ui.randomize(); assert.equal(ui.calls.uninstall.length, 1);
+    await flush(); await ui.acceptUninstall();
+});
+test('Randomize refreshes its candidate after an external profile change', async () => {
+    const ui = uiEnvironment(false, { data: { profiles: { Default: [B], Other: [A] } } });
+    await flush(); await flush();
+    await ui.message('setActiveProfile', { profileName: 'Other' });
+    await flush(); await flush();
+    ui.randomize(); assert.equal(ui.calls.uninstall.length, 1);
+    assert.equal(ui.calls.uninstall[0].id, A);
+    await flush(); await ui.acceptUninstall();
+});
+test('Randomize enables directly when reinstall is disabled or a catalog URL is missing', async () => {
+    for (const data of [{ uninstallAndReinstallChecked: false }, { profiles: { Default: [B] } }]) {
+        const ui = uiEnvironment(true, { data }); await flush(); await flush();
+        ui.randomize(); await flush(); await flush();
+        assert.equal(ui.calls.uninstall.length, 0);
+        assert.equal(ui.mods.filter(mod => mod.enabled).length, 1);
+        assert.equal(ui.data.shuffleBags[JSON.stringify(['profile', 'Default'])].length, 1);
+    }
+});

@@ -20,6 +20,32 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Initialize Elements
     const els = initEls();
 
+    let manualPlan = null;
+    let preparationVersion = 0;
+    let manualClickInProgress = false;
+    els.randomizeButton.disabled = true;
+
+    function invalidateManual() {
+        ++preparationVersion;
+        manualPlan = null;
+        els.randomizeButton.disabled = true;
+        els.randomizeButton.title = 'Loading mods…';
+    }
+    async function prepareManual() {
+        invalidateManual();
+        const version = preparationVersion;
+        try {
+            const plan = await sendMsg('prepareManualRandomization');
+            if (version !== preparationVersion) return;
+            manualPlan = plan;
+            els.randomizeButton.title = plan ? '' : 'No mods available in this profile';
+        } catch (error) {
+            if (version === preparationVersion) showError(error.message);
+        } finally {
+            if (version === preparationVersion) els.randomizeButton.disabled = manualClickInProgress || !manualPlan;
+        }
+    }
+
     function offerReinstall(mod) {
         showModMessage(mod, true);
         showMissedNotificationMessage(mod, () => {
@@ -57,6 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (pending?.uninstallMode) await handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
             await renderExtensionList();
             await refreshCurrentMod();
+            await prepareManual();
         }
     });
 
@@ -127,7 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await loadAndRenderProfiles();
         await renderExtensionList();
         await refreshCurrentMod();
-
+        await prepareManual();
 
     })();
 
@@ -138,6 +165,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const profileName = e.target.value;
         if (getRenderLock()) { e.target.value = getCurrentProfile(); return; }
 
+        invalidateManual();
         setCurrentProfile(profileName);
         await sendMsg('setActiveProfile', { profileName });
         console.log('Profile switched to', profileName);
@@ -207,6 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Toggle Handlers
     async function onToggleChange(key, inputEl) {
+        invalidateManual();
         await storageSet({ [key]: inputEl.checked });
         console.log(`Toggle changed: ${key} = ${inputEl.checked}`);
 
@@ -220,9 +249,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (key === 'uninstallAndReinstallChecked' && !inputEl.checked) {
             chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
         }
+        await prepareManual();
     }
 
     els.shuffleBagToggle?.addEventListener('change', async () => {
+        invalidateManual();
         const value = els.shuffleBagToggle.checked;
         try {
             await sendMsg('setShuffleBag', { value });
@@ -230,6 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const s = await storageGet('shuffleBagChecked');
             els.shuffleBagToggle.checked = s.shuffleBagChecked !== false;
             showError(error.message);
+            await prepareManual();
         }
     });
     els.autoModToggle.addEventListener('change', () => onToggleChange('autoModIdentificationChecked', els.autoModToggle));
@@ -341,54 +373,71 @@ document.addEventListener('DOMContentLoaded', () => {
     // Randomize Button
     let redirectTimeoutId = null;
 
-    els.randomizeButton.addEventListener('click', async () => {
-        if (els.randomizeButton.disabled) return;
+    els.randomizeButton.addEventListener('click', () => {
+        if (els.randomizeButton.disabled || !manualPlan || manualClickInProgress || getRenderLock()) return;
+        const plan = manualPlan;
+        manualClickInProgress = true;
         els.randomizeButton.disabled = true;
-        try {
-            await sendMsg('clearMissedNotification');
-            if (redirectTimeoutId) {
-                clearTimeout(redirectTimeoutId);
-                redirectTimeoutId = null;
+        if (plan.reinstallUrl) {
+            let finishedSynchronously = false;
+            // This must be the first API call: no await, storage, or message first.
+            uninstallFromGesture(plan, error => {
+                finishedSynchronously = true;
+                (async () => {
+                    try {
+                        if (error) {
+                            await sendMsg('cancelManualRandomization', { token: plan.token });
+                            showError(error.message || 'Uninstall cancelled.');
+                        } else {
+                            await sendMsg('completeManualRandomization', { token: plan.token });
+                            if (!isSidebar) window.close();
+                        }
+                    } catch (completionError) {
+                        showError(completionError.message);
+                    } finally {
+                        manualClickInProgress = false;
+                        await prepareManual();
+                    }
+                })();
+            }, chrome, { openStore: false });
+            if (!finishedSynchronously) {
+                sendMsg('beginManualRandomization', { token: plan.token }).catch(error => showError(error.message));
             }
-            removeRedirectMessage();
-
-            const st = await storageGet('uninstallAndReinstallChecked');
-            const uninstallAndReinstall = !!st.uninstallAndReinstallChecked;
-
-            const modToProcess = await sendMsg('getRandomMod', { uninstallAndReinstall });
-
-            if (!modToProcess || !modToProcess.id) {
-                await customAlert('No mod was found to randomize.');
-                return;
-            }
-
-            if (uninstallAndReinstall && modToProcess.reinstallUrl) {
-                offerReinstall(modToProcess);
-            } else {
-                await showModMessage(modToProcess, uninstallAndReinstall && !modToProcess.reinstallUrl);
-
-                if (modToProcess.modsTabUrl) {
+            return;
+        }
+        (async () => {
+            try {
+                if (redirectTimeoutId) { clearTimeout(redirectTimeoutId); redirectTimeoutId = null; }
+                removeRedirectMessage();
+                const mod = await sendMsg('enablePreparedManualRandomization', { token: plan.token });
+                await showModMessage(mod, els.openModsToggle.checked);
+                if (mod.modsTabUrl) {
                     showRedirectMessage();
                     redirectTimeoutId = setTimeout(() => {
                         removeRedirectMessage();
-                        chrome.tabs.create({ url: modToProcess.modsTabUrl });
+                        chrome.tabs.create({ url: mod.modsTabUrl });
                         if (isSidebar) clearEnabledMessage();
                         else window.close();
                     }, 3000);
                 }
+            } catch (error) {
+                showError(error.message || 'Could not switch mods.');
+            } finally {
+                manualClickInProgress = false;
+                await prepareManual();
             }
-
-        } catch (error) {
-            console.error(error);
-            showError(error.message || 'Unknown error');
-        } finally {
-            els.randomizeButton.disabled = false;
-        }
+        })();
     });
 
     // Storage Listener
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
+        const manualKeys = [
+            'profiles', 'activeProfile', 'detectedModList', 'autoModIdentificationChecked',
+            'uninstallAndReinstallChecked', 'shuffleBagChecked', 'shuffleBags',
+            'lastEnabledModId', 'disableModsOutsideProfileChecked'
+        ];
+        if (manualKeys.some(key => changes[key])) prepareManual();
         if (changes.currentMod) refreshCurrentMod();
         if (changes.shuffleBagChecked && els.shuffleBagToggle) {
             els.shuffleBagToggle.checked = changes.shuffleBagChecked.newValue !== false;

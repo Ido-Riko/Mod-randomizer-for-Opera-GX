@@ -8,7 +8,8 @@ DOM fixtures. They cover profile cleanup, concurrent profile changes and mod
 switches, exports, Cancel, timers, catalog failure/timeout, popup/sidebar state,
 the synchronous invocation of uninstall from an explicit click, and shuffle cycles,
 persistence, independent profiles/all-mods bags, edits, failure handling, migration,
-and the advanced toggle in both views.
+the advanced toggle in both views, and direct manual uninstall with cancellation,
+reserved selection, cold-worker completion, and exactly-once store navigation.
 
 ## Opera GX integration checklist
 
@@ -17,19 +18,24 @@ or confirmation dialogs. Run these checks in Opera GX before publishing a releas
 Use a disposable browser profile and mods you can reinstall.
 
 1. Load this directory unpacked through Opera's extensions page with developer mode enabled.
-2. With **Uninstall and reinstall** enabled, click **Randomize** in the popup.
-   The chosen mod and a **Reinstall** button should appear; no uninstall should occur yet.
-3. Click **Reinstall**. Confirm that Opera displays its uninstall confirmation.
-   Cancel: the mod stays installed, no store tab opens, and Reinstall remains available.
-   Retry and accept: the correct store page opens only after successful removal.
-4. Repeat steps 2–3 in the sidebar. On success the sidebar remains open.
+2. With **Uninstall and reinstall** enabled, wait for **Randomize** to become available.
+   Opening the popup must not switch or uninstall a mod. Click **Randomize** once:
+   Opera's uninstall confirmation should appear immediately, without a second button.
+3. Cancel: the mod remains installed, no store tab opens, and the shuffle draw is not
+   consumed. Click Randomize again to retry. Accept: the correct store page should
+   open exactly once after successful removal, even if the popup closes.
+4. Repeat steps 2–3 in the sidebar. On success the sidebar remains open and the next
+   candidate becomes available. With reinstall disabled or a missing catalog URL,
+   Randomize should enable the selected mod normally without an uninstall prompt.
 5. Enable periodic randomization and OS notifications. An alarm should offer a notification,
    never uninstall automatically. Clicking the notification should open Opera's confirmation.
    Test both Cancel and Accept. Inspect the selected name and the store URL.
 6. Repeat step 5 after the background worker has stopped (close its DevTools and allow
    it to become inactive). The notification's encoded target should work on a cold worker.
 7. Dismiss the OS notification and open the popup: the pending Reinstall button should remain.
-   Also close the popup while Randomize is preparing, then reopen it to recover that action.
+   Close/reopen the popup during candidate loading: opening it must not switch mods.
+   Stop the worker after a manual reservation begins and verify successful removal
+   still opens the correct store page and consumes only one draw.
 8. Open popup and sidebar together; switch profiles, edit different checkboxes quickly,
    and confirm both views converge on the saved profile without losing selections.
 9. Reinstall a selected mod within 60 seconds; its existing profile inclusions and exclusions
@@ -37,9 +43,9 @@ Use a disposable browser profile and mods you can reinstall.
 10. Block access to raw.githubusercontent.com and reload the extension. Randomization should
     still use the packaged catalog after the bounded remote attempt.
 
-The extra Reinstall click is intentional: selection can require asynchronous work;
-uninstall itself must start directly from an explicit click. Both UI and background
-notification handlers use the same synchronous helper and request native confirmation.
+Manual Randomize prepares its candidate before the click so uninstall starts in
+the click's synchronous stack. Notifications and their pending Reinstall button
+also use the synchronous helper and request native confirmation.
 
 
 ## Shuffle bag integration checks
