@@ -129,29 +129,15 @@ async function loadCatalog() {
 
 // Function to get a mod URL by name
 // ---------------------- getModUrlByName ----------------------
-async function getModUrlByName(modName) {
+function getModUrlByName(modName) {
   console.log(`[getModUrlByName] Looking for URL of mod: "${modName}"`);
 
-  // Check catalog first
+  // Look up the mod in the catalog
   if (catalog[modName] && catalog[modName].url) {
     console.log(`[getModUrlByName] Found in catalog:`, catalog[modName].url);
     return catalog[modName].url;
-  } else {
-    console.log(`[getModUrlByName] Not found in catalog for name: "${modName}"`);
   }
 
-  // Check newly installed mods
-  const storageData = await chrome.storage.local.get(['newMods']);
-  const newMods = storageData.newMods || {};
-  const found = Object.values(newMods).find(m => m.name === modName);
-  if (found && found.url) {
-    console.log(`[getModUrlByName] Found in newMods storage:`, found.url);
-    return found.url;
-  } else {
-    console.log(`[getModUrlByName] Not found in newMods storage for: "${modName}"`);
-  }
-
-  // Fallback
   console.warn(`[getModUrlByName] No URL found for "${modName}"`);
   return null; // temporarily remove fallback to mods/manage
 }
@@ -440,7 +426,7 @@ async function executeRandomization(source = 'unknown') {
 
       if (!selected) return null;
 
-      const reinstallUrl = await getModUrlByName(selected.name);
+      const reinstallUrl = getModUrlByName(selected.name);
       result = await handleUninstallWorkflow(selected, reinstallUrl, activeList, source, s);
     } else {
       console.log('[executeRandomization] Uninstall off, calling handleModEnableWorkflow');
