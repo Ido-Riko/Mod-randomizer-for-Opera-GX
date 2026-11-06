@@ -11,7 +11,7 @@ function uiEnvironment(sidebar = false, options = {}) {
     const els = Object.fromEntries(names.map(name => [name, element()]));
     const dom = new Map(); let ready, reinstallClick, closed = false;
     const timers = new Map(); let timer = 0;
-    const messages = [], errors = [];
+    const messages = [], errors = [], shownMods = [];
     const context = vm.createContext({
         chrome: env.chrome, console: { log() {}, error() {} }, uninstallFromGesture,
         window: { location: { pathname: sidebar ? '/sidebar.html' : '/popup.html' }, close() { closed = true; } },
@@ -20,8 +20,8 @@ function uiEnvironment(sidebar = false, options = {}) {
         storageGet: keys => env.chrome.storage.local.get(keys),
         storageSet: value => new Promise(resolve => env.chrome.storage.local.set(value, resolve)),
         sendMsg: async (action, fields) => { env.calls.operations.push('message'); messages.push({ action, ...fields }); const result = await env.message(action, fields); if (result?.status === 'error') throw new Error(result.message); return result; },
-        showModMessage() {}, clearEnabledMessage() {}, showRedirectMessage() {}, removeRedirectMessage() {},
-        showMissedNotificationMessage(target, callback) { reinstallClick = callback; },
+        showModMessage(target) { shownMods.push(target); env.calls.operations.push('showModMessage'); }, clearEnabledMessage() {}, showRedirectMessage() {}, removeRedirectMessage() {},
+        showMissedNotificationMessage(target, callback) { env.calls.operations.push('showReinstall'); reinstallClick = callback; },
         showError: message => errors.push(message), customAlert: async message => errors.push(message),
         renderExtensionList: async () => {}, loadAndRenderProfiles: async () => {}, getRenderLock: () => false,
         getCurrentProfile: () => env.data.activeProfile, setCurrentProfile() {}, exportProfiles() {}, importProfiles() {}, showImportResults() {},
@@ -29,7 +29,7 @@ function uiEnvironment(sidebar = false, options = {}) {
         setTimeout(fn, delay) { timers.set(++timer, { fn, delay }); return timer; }, clearTimeout: id => timers.delete(id)
     });
     evaluate('popup.js', context); ready();
-    return { ...env, els, context, messages, errors, timers, get closed() { return closed; },
+    return { ...env, els, context, messages, errors, shownMods, timers, get closed() { return closed; },
         randomize() { gesture = true; els.randomizeButton.listeners.click(); gesture = false; },
         async acceptUninstall(index = env.calls.uninstall.length - 1, emitEvent = true) {
             const call = env.calls.uninstall[index];
@@ -51,6 +51,8 @@ for (const sidebar of [false, true]) {
         ui.randomize();
         assert.equal(ui.calls.operations[operationStart], 'uninstall', 'no message or storage access may precede uninstall');
         assert.equal(ui.calls.uninstall.length, 1);
+        assert.deepEqual(ui.calls.operations.slice(operationStart, operationStart + 3), ['uninstall', 'showModMessage', 'showReinstall']);
+        assert.equal(ui.shownMods.at(-1).id, A);
         assert.equal(ui.calls.uninstall[0].config.showConfirmDialog, true);
         assert.equal(ui.calls.tabs.length, 0, 'store tab must wait for confirmation');
         ui.randomize(); assert.equal(ui.calls.uninstall.length, 1, 'ignore double clicks');
@@ -67,7 +69,9 @@ for (const sidebar of [false, true]) {
         await flush(); await flush();
         assert.equal(ui.calls.tabs.length, 0); assert.equal(ui.closed, false);
         assert.equal(ui.data.shuffleBags, undefined); assert.match(ui.errors.at(-1), /cancelled/);
-        ui.randomize(); assert.equal(ui.calls.uninstall.length, 2);
+        const retryStart = ui.calls.operations.length;
+        ui.clickReinstall(); assert.equal(ui.calls.operations[retryStart], 'uninstall');
+        assert.equal(ui.calls.uninstall.length, 2);
         assert.equal(ui.calls.uninstall[1].id, A);
         await flush(); await ui.acceptUninstall();
     });
@@ -185,3 +189,27 @@ test('Randomize enables directly when reinstall is disabled or a catalog URL is 
         assert.equal(ui.data.shuffleBags[JSON.stringify(['profile', 'Default'])].length, 1);
     }
 });
+
+for (const sidebar of [false, true]) {
+    test(`${sidebar ? 'sidebar' : 'popup'} restores the manual message and Reinstall button after reopening`, async () => {
+        const ui = uiEnvironment(sidebar); await flush(); await flush();
+        ui.randomize(); await flush();
+        ui.chrome.runtime.lastError = { message: 'User cancelled' };
+        ui.calls.uninstall[0].cb(); delete ui.chrome.runtime.lastError;
+        await flush(); await flush();
+        const pending = ui.data.pendingNotification;
+        assert.equal(pending.modId, A);
+        assert.equal(typeof pending.manualToken, 'number');
+        const reopened = uiEnvironment(sidebar, { data: structuredClone(ui.data) });
+        await flush(); await flush();
+        assert.equal(reopened.shownMods.at(-1).id, A);
+        const start = reopened.calls.operations.length;
+        reopened.clickReinstall();
+        assert.equal(reopened.calls.operations[start], 'uninstall');
+        assert.equal(reopened.calls.uninstall[0].id, A);
+        await flush(); await reopened.acceptUninstall();
+        assert.equal(reopened.calls.tabs.length, 1);
+        assert.deepEqual(reopened.data.shuffleBags[JSON.stringify(['profile', 'Default'])], [A]);
+        assert.equal(reopened.data.pendingNotification, undefined);
+    });
+}
