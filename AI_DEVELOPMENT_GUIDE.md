@@ -4,32 +4,37 @@ This document is written for AI agents and developers working on the Opera GX Mo
 
 ## 1. Extension Architecture
 The extension is built under **Manifest V3** with the following structure:
-- `background.js`: A Service Worker acting as the central source of truth. Handles `chrome.management` API calls, notifications, alarms, and tracks background state.
+- `background.js`: A Service Worker acting as the central source of truth. Handles `chrome.management` API calls, notifications, alarms, and tracks background state. It is an ES-module service worker.
 - `popup.html` & `sidebar.html`: The user interfaces. They share exactly the same DOM structure and utilize the same scripts (`popup.js`).
 - `modules/`:
   - `api.js`: Wrappers for `chrome.storage.local` and `chrome.runtime.sendMessage`/`Port`.
   - `profiles.js`: Logic for managing, exporting, and importing user profiles.
-  - `ui.js`: DOM manipulation, rendering the mod list, toggles, and modal dialogues. 
+  - `ui.js`: DOM manipulation, rendering the mod list, toggles, and modal dialogues.
   - `utils.js`: Formatting, custom alerts, prompts, and confirms.
 
 ## 2. Core Workflows to Understand
 
 ### A. The "Uninstall and Reinstall" Workflow (CRITICAL)
 Due to Opera GX API limitations, simply enabling a mod via `chrome.management.setEnabled()` does not toggle all internal checkmarks of the mod. To solve this, the extension defaults to an "Uninstall and Reinstall" flow:
-1. When chosen, the actively running mod is uninstalled via `chrome.management.uninstall(..., { showConfirmDialog: true })`.
-2. The user is redirected to the mod's install page to re-download it.
-3. **URL Cataloging**: To redirect the user, the background worker fetches `url-catalog.json` from the remote GitHub repository. If a mod's installation URL cannot be found, the extension falls back strictly to the basic `setEnabled()` flow.
+1. The worker chooses/enables a mod and stores the pending reinstall target.
+2. Popup/sidebar show a **Reinstall** button. Its click calls `uninstallFromGesture()` synchronously, before any await, message, storage access, or tab creation.
+3. Automatic startup/alarm selection only offers an OS notification. Its click handler decodes the target from the notification ID and calls the same helper synchronously, including after a worker restart.
+4. Native confirmation is always requested. Cancellation/error keeps the pending action and opens no store tab; success opens the reinstall URL and clears the matching pending action.
+5. Catalog lookup uses a bundled fallback, a remote request with a three-second timeout, and retry on a later randomization. Invalid/missing URLs use the enable-only workflow.
 *Rule:* If you modify randomization outputs, you must account for this split workflow (`executeRandomization()` -> `handleUninstallWorkflow()` vs `handleModEnableWorkflow()`).
 
 ### B. Grace Period for Uninstalled Mods
-When users use the "Uninstall/Reinstall" flow, the mod temporarily disappears from `chrome.management`. 
+When users use the "Uninstall/Reinstall" flow, the mod temporarily disappears from `chrome.management`.
 - `background.js` listens to `onUninstalled` and saves the mod to `recentlyUninstalled` in `chrome.storage.local` with a timestamp.
-- `popup.js` (`cleanupUndetectedMods`) utilizes a 60-second grace period. If a mod is uninstalled but is within the grace period, it is **not** deleted from the user's profiles. 
+- `background.js` (`cleanupUndetectedMods`) utilizes a 60-second grace period, reading the timestamp from the stored object (and accepting legacy numeric timestamps). If a mod is uninstalled but is within the grace period, it is **not** deleted from the user's profiles.
 
 ### C. Background-UI Communication
-- `popup.js` initiates a long-lived connection (`chrome.runtime.connect({ name: 'popup' })`) handled in `api.js`.
-- The background worker tracks `popupPort` and uses it to execute UI updates (like showing messages or hiding missed notifications) simultaneously across any open popup/sidebar without throwing errors if the UI is closed.
-- Fallback: `pendingRandomization` and `pendingNotification` objects are saved into `chrome.storage.local`. When `popup.js` opens, it reads these to determine if there were events missed while the UI was closed.
+- `modules/api.js` reconnects long-lived UI ports after disconnects.
+- The worker tracks a Set of all open UI ports. Ports carry transient errors and refresh events.
+- `chrome.storage.onChanged` carries durable state updates, including pending reinstall actions; new views read the latest stored state.
+- All profile mutations (selection, create, rename, delete, import, order initialization, cleanup, and installation discovery) run through the worker's serialized state queue.
+- Checkbox saves submit per-ID changes rather than overwriting a whole profile from a stale UI snapshot.
+- Do not add UI writes to `profiles`, `profilesOrder`, or `knownDetectedIds`.
 
 ## 3. Storage and State Keys
 All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally; fetch them from storage or handle missing keys gracefully (usually falling back to `true` or `false` based on the feature's default state in `background.js` `onInstalled`).
@@ -52,8 +57,8 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 
 ## 4. Rules for Adding Features
 1. **Never Duplicate Logic:** If you need to trigger a randomization, send a message to `background.js` (`action: 'getRandomMod'`). Do NOT write mod picking logic in the popup.
-2. **Modifying the UI:** 
-   - Ensure the IDs or classes you add to `popup.html` also go to `sidebar.html`. 
+2. **Modifying the UI:**
+   - Ensure the IDs or classes you add to `popup.html` also go to `sidebar.html`.
    - Add new elements to the `initEls` mapping inside `modules/ui.js` instead of globally querying the document in `popup.js`.
 3. **Alarms and Timers:** Let `background.js` handle all `setTimeout` and `chrome.alarms` calls for core features. The UI should only handle debouncing for UI inputs (like search bars or time inputs).
 4. **Handling Edge Cases for Disabled Mods:** Remember that the "Randomize all mods" toggle (`autoModIdentificationChecked`) disables the custom profiles list visually and logically. Any profile-editing feature must be blocked or hidden when this mode is active.
@@ -64,3 +69,6 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 - [ ] If I added a new setting, did I set a default value in `background.js` under `chrome.runtime.onInstalled`?
 - [ ] Are UI modifications mirrored in both `popup.html` and `sidebar.html`?
 - [ ] Is UI state properly preserved across popup closes utilizing `chrome.storage.local`?
+
+## 6. Tests
+Run `npm test` (Node.js 22+, no dependencies). See `TESTING.md` for native Opera GX checks. Mocks verify call ordering but cannot certify browser user-gesture enforcement.

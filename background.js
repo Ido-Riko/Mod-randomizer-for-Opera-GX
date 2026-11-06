@@ -1,96 +1,61 @@
-// background.js (fixed)
-// - Stores detected mod list separately and exposes only mods to popup
-// - Writes a pendingRandomization event to storage and only runtime.sendMessage
-//   if a popup view is open (avoids sending to unloaded popup)
-// - Redirect delay for manual randomize = 3000ms so popup shows redirect message
-// - Adds console logs for toggles/saves/alarms/randomization events
-
-const MAX_LAST_RANDOMIZATION_AGE = 24 * 60 * 60 * 1000;
-const MIN_RANDOMIZE_MINUTES = 0.25; // 15s for testing
-const MIN_COOLDOWN_MS = 5000;
+import { notificationIdFor, modFromNotificationId, uninstallFromGesture, validReinstallMod } from './modules/reinstall.js';
+// Background owns profile mutations, scheduling, and mod selection.
+const MIN_RANDOMIZE_MINUTES = 0.25;
 const IDENTIFY_THROTTLE_MS = 1500;
 
 let identifyInFlight = null;
 let lastIdentifyAt = 0;
 
-let redirectTimeout = null;
 let randomizationInProgress = false;
+let scheduledNotificationTimer = null;
 
 // Track popup connection
-let popupPort = null;
+const popupPorts = new Set();
+let stateQueue = Promise.resolve();
+function serializeState(task) {
+  const result = stateQueue.then(task);
+  stateQueue = result.catch(() => {});
+  return result;
+}
 
 // ---------- Storage helper ----------
+function callbackCall(invoke) {
+  return new Promise((resolve, reject) => invoke(result => {
+    const error = chrome.runtime.lastError;
+    if (error) reject(new Error(error.message));
+    else resolve(result);
+  }));
+}
 const storage = {
-  get(keys) { return new Promise(resolve => chrome.storage.local.get(keys, resolve)); },
-  set(obj) { return new Promise(resolve => chrome.storage.local.set(obj, resolve)); },
-  remove(k) { return new Promise(resolve => chrome.storage.local.remove(k, resolve)); }
+  get(keys) { return callbackCall(cb => chrome.storage.local.get(keys, cb)); },
+  set(obj) { return callbackCall(cb => chrome.storage.local.set(obj, cb)); },
+  remove(keys) { return callbackCall(cb => chrome.storage.local.remove(keys, cb)); }
 };
-
 const management = {
-  getAll() { return new Promise(resolve => chrome.management.getAll(resolve)); },
-  setEnabled(id, enabled) { return new Promise(resolve => chrome.management.setEnabled(id, enabled, () => resolve())); }
+  getAll() { return callbackCall(cb => chrome.management.getAll(cb)); },
+  setEnabled(id, enabled) { return callbackCall(cb => chrome.management.setEnabled(id, enabled, cb)); }
 };
 
 function nowMs() { return Date.now(); }
 
 // ---------- Port-based delivery ----------
-async function tryDeliverToPopup(message) {
-  // Broadcast to all open UI instances (popup/sidebar)
-  return new Promise(resolve => {
-    if (popupPort) {
-      try {
-        popupPort.postMessage(message);
-      } catch (e) {
-        popupPort = null;
-      }
-    }
-
-    // Always attempt runtime broadcast so SIDEBAR hears it even if POPUP grabbed the port
-    chrome.runtime.sendMessage(message, (res) => {
-      if (chrome.runtime.lastError) {
-        console.debug('runtime.sendMessage fallback failed', chrome.runtime.lastError.message);
-      }
-      resolve(true); // Don't rely on response
-    });
-  });
-}
-
-chrome.runtime.onConnect.addListener((port) => {
-  if (port && port.name === 'popup') {
-    popupPort = port;
-    console.log('Background: popup connected via port');
-
-    port.onMessage.addListener(async (msg) => {
-      if (!msg || !msg.action) return;
-
-      if (msg.action === 'popupReady') {
-        const { pendingRandomization } = await storage.get('pendingRandomization');
-        if (pendingRandomization && pendingRandomization.enabledExtension) {
-          popupPort.postMessage({
-            action: 'randomizationCompleted',
-            enabledExtension: pendingRandomization.enabledExtension,
-            pendingId: pendingRandomization.timestamp
-          });
-          console.log('Sent pendingRandomization via port to popup');
-        }
-      } else if (msg.action === 'randomizationAck') {
-        await storage.remove('pendingRandomization');
-        console.log('Cleared pendingRandomization after ACK');
-      }
-    });
-
-    port.onDisconnect.addListener(() => {
-      console.log('Popup port disconnected');
-      popupPort = null;
-    });
+function tryDeliverToPopup(message) {
+  for (const port of popupPorts) {
+    try { port.postMessage(message); }
+    catch { popupPorts.delete(port); }
   }
+}
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'popup') return;
+  popupPorts.add(port);
+  port.onDisconnect.addListener(() => popupPorts.delete(port));
 });
 
 // ---------- Identification ----------
-async function identifyModExtensions() {
+async function identifyModExtensions(force = false) {
   if (identifyInFlight) return identifyInFlight;
   const now = Date.now();
-  if (now - lastIdentifyAt < IDENTIFY_THROTTLE_MS) {
+  if (!force && now - lastIdentifyAt < IDENTIFY_THROTTLE_MS) {
     const cached = await storage.get('detectedModList');
     return cached.detectedModList || [];
   }
@@ -131,53 +96,48 @@ async function ensureDefaults() {
 const CATALOG_URL = 'https://raw.githubusercontent.com/Ido-Riko/Mod-randomizer-for-Opera-GX/main/url-catalog.json';
 let catalog = {};
 let catalogLoadPromise = null;
-
-// Load catalog immediately on background startup
+let lastCatalogAttempt = 0;
 loadCatalog();
 
-
-// Load static catalog on startup
 async function loadCatalog() {
   if (catalogLoadPromise) return catalogLoadPromise;
-
+  lastCatalogAttempt = Date.now();
   catalogLoadPromise = (async () => {
-    try {
-      const res = await fetch(CATALOG_URL);
-      catalog = await res.json();
-      console.log('Catalog loaded:', Object.keys(catalog).length, 'mods');
-    } catch (err) {
-      console.error('Failed to load catalog:', err);
+    async function readCatalog(url, signal) {
+      const response = await fetch(url, { signal });
+      if (!response.ok) throw new Error(`Catalog HTTP ${response.status}`);
+      const value = await response.json();
+      if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Invalid catalog');
+      return Object.fromEntries(Object.entries(value).filter(([, entry]) => {
+        try { return new URL(entry.url).origin === 'https://store.gx.me'; }
+        catch { return false; }
+      }));
     }
-  })();
-
+    // The packaged catalog remains usable offline and while refreshing remotely.
+    if (!Object.keys(catalog).length) {
+      try { catalog = await readCatalog(chrome.runtime.getURL('url-catalog.json')); }
+      catch (error) { console.warn('Bundled catalog failed', error); }
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try { catalog = { ...catalog, ...await readCatalog(CATALOG_URL, controller.signal) }; }
+    catch (error) { console.warn('Remote catalog unavailable; using local catalog', error); }
+    finally { clearTimeout(timeout); }
+  })().finally(() => { catalogLoadPromise = null; });
   return catalogLoadPromise;
 }
 
 // Function to get a mod URL by name
 // ---------------------- getModUrlByName ----------------------
-async function getModUrlByName(modName) {
+function getModUrlByName(modName) {
   console.log(`[getModUrlByName] Looking for URL of mod: "${modName}"`);
 
-  // Check catalog first
+  // Look up the mod in the catalog
   if (catalog[modName] && catalog[modName].url) {
     console.log(`[getModUrlByName] Found in catalog:`, catalog[modName].url);
     return catalog[modName].url;
-  } else {
-    console.log(`[getModUrlByName] Not found in catalog for name: "${modName}"`);
   }
 
-  // Check newly installed mods
-  const storageData = await chrome.storage.local.get(['newMods']);
-  const newMods = storageData.newMods || {};
-  const found = Object.values(newMods).find(m => m.name === modName);
-  if (found && found.url) {
-    console.log(`[getModUrlByName] Found in newMods storage:`, found.url);
-    return found.url;
-  } else {
-    console.log(`[getModUrlByName] Not found in newMods storage for: "${modName}"`);
-  }
-
-  // Fallback
   console.warn(`[getModUrlByName] No URL found for "${modName}"`);
   return null; // temporarily remove fallback to mods/manage
 }
@@ -254,7 +214,8 @@ async function pickNextMod(modsForRandomization, specificModId = null, lastEnabl
     console.warn(`[pickNextMod] Specific mod ID ${specificModId} not found, falling back to random`);
   }
 
-  const candidates = modsForRandomization.filter(m => m.id !== lastEnabledId);
+  const alternatives = modsForRandomization.filter(m => m.id !== lastEnabledId);
+  const candidates = alternatives.length ? alternatives : modsForRandomization;
   if (!candidates.length) return null;
 
   const selected = candidates[Math.floor(Math.random() * candidates.length)];
@@ -263,7 +224,7 @@ async function pickNextMod(modsForRandomization, specificModId = null, lastEnabl
 }
 
 async function enableMod(selectedMod, modsToDisable) {
-  const currentlyEnabled = modsToDisable.filter(m => m.enabled);
+  const currentlyEnabled = modsToDisable.filter(m => m.enabled && m.id !== selectedMod.id);
   await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
 
   await management.setEnabled(selectedMod.id, true);
@@ -359,7 +320,7 @@ async function handleModEnableWorkflow(modIdsForRandomization, source, specificM
   return await triggerUXFeedback(source, selected, settings, isUrlMissingFallback);
 }// ---------------------- executeRandomization ----------------------
 async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, source, settings) {
-  if (!reinstallUrl) {
+  if (!validReinstallMod({ ...selectedMod, reinstallUrl })) {
     console.log('[executeRandomization] Reinstall URL missing, calling handleModEnableWorkflow with specific ID');
     return await handleModEnableWorkflow(activeList, source, selectedMod.id, true);
   }
@@ -369,8 +330,9 @@ async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, so
   await enableMod(selectedMod, mods);
 
   if (source === 'manual') {
-    console.log('[executeRandomization] Manual uninstall mode, returning result to popup');
-    return { id: selectedMod.id, name: selectedMod.name, reinstallUrl };
+    const mod = { id: selectedMod.id, name: selectedMod.name, reinstallUrl };
+    await storage.set({ pendingNotification: { modId: mod.id, modName: mod.name, reinstallUrl, uninstallMode: true, timestamp: nowMs() } });
+    return mod;
   }
 
   const notificationsOn = settings.showNotificationsChecked === undefined ? true : !!settings.showNotificationsChecked;
@@ -380,8 +342,10 @@ async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, so
   }
 
   const notificationDelay = source === 'startup' ? 5000 : 500;
+  const notificationId = notificationIdFor({ id: selectedMod.id, name: selectedMod.name, reinstallUrl });
   await storage.set({
     pendingNotification: {
+      notificationId,
       modId: selectedMod.id,
       modName: selectedMod.name,
       reinstallUrl,
@@ -390,13 +354,9 @@ async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, so
     }
   });
 
-  tryDeliverToPopup({
-    action: 'showMissedNotification',
-    mod: { id: selectedMod.id, name: selectedMod.name, reinstallUrl }
-  });
-
-  setTimeout(() => {
-    chrome.notifications.create('modRandomizerAlert', {
+  scheduledNotificationTimer = setTimeout(() => {
+    scheduledNotificationTimer = null;
+    chrome.notifications.create(notificationId, {
       type: 'basic',
       iconUrl: 'icons/icon_128.png',
       title: 'Mod Randomizer',
@@ -404,17 +364,18 @@ async function handleUninstallWorkflow(selectedMod, reinstallUrl, activeList, so
       requireInteraction: true
     });
     console.log(`[executeRandomization] Uninstall notification created for ${selectedMod.name}`);
-    setTimeout(() => chrome.notifications.clear('modRandomizerAlert'), 15000);
+    setTimeout(() => chrome.notifications.clear(notificationId), 15000);
   }, notificationDelay);
 
   return null;
 }
 
 async function executeRandomization(source = 'unknown') {
-  console.log(`[executeRandomization] Source: ${source}`);
-
+  if (randomizationInProgress) return { status: 'error', message: 'A mod switch is already in progress.' };
+  randomizationInProgress = true;
   try {
     if (catalogLoadPromise) await catalogLoadPromise;
+    else if (Date.now() - lastCatalogAttempt > 60000) void loadCatalog();
 
     const s = await storage.get([
       'profiles', 'activeProfile', 'uninstallAndReinstallChecked',
@@ -450,8 +411,7 @@ async function executeRandomization(source = 'unknown') {
       return null;
     }
 
-    await storage.remove('pendingNotification');
-    await storage.set({ lastRandomizationTime: nowMs() });
+    await clearPendingNotification();
 
     if (s.disableModsOutsideProfileChecked && !useAll) {
       await disableModsOutsideActiveProfile(activeProfileList);
@@ -466,120 +426,68 @@ async function executeRandomization(source = 'unknown') {
 
       if (!selected) return null;
 
-      const reinstallUrl = await getModUrlByName(selected.name);
+      const reinstallUrl = getModUrlByName(selected.name);
       result = await handleUninstallWorkflow(selected, reinstallUrl, activeList, source, s);
     } else {
       console.log('[executeRandomization] Uninstall off, calling handleModEnableWorkflow');
       result = await handleModEnableWorkflow(activeList, source);
     }
 
-    // Common manual source pending event hook
-    if (result && result.id && source === 'manual') {
-      // Double check it's not the uninstall payload (which lacks modsTabUrl normally, but carries reinstallUrl)
-      // Actually, if it's manual uninstall, we DON'T trigger randomizationCompleted here, 
-      // because the popup code expects the bare result to trigger the uninstall flow in popup.js directly.
-      // Wait, original code:
-      // if (result && source === 'manual') { pendingRandomization... }
-      // Let's preserve exactly conditionally:
-      if (!result.reinstallUrl) {
-        // Only for enable workflows
-        const pending = { enabledExtension: result, timestamp: nowMs() };
-        await storage.set({ pendingRandomization: pending });
-        tryDeliverToPopup({ action: 'randomizationCompleted', enabledExtension: result, pendingId: pending.timestamp });
-      }
-    }
-
+    await storage.set({ lastRandomizationTime: nowMs() });
     return result;
   } catch (err) {
     console.error('[executeRandomization] error', err);
-    return null;
+    return { status: 'error', message: err.message || 'Could not switch mods.' };
+  } finally {
+    randomizationInProgress = false;
   }
 }
-// Handle notification clicks
-chrome.notifications.onClicked.addListener((notificationId) => {
-  if (notificationId === 'modRandomizerAlert') {
-    // Use callback-based storage to preserve user gesture synchronously
-    chrome.storage.local.get('pendingNotification', (result) => {
-      const pendingNotification = result.pendingNotification;
 
-      // If it's an enable mode click (no pending notification, or not uninstall mode), open mods tab
-      if (!pendingNotification || !pendingNotification.uninstallMode) {
-        console.log('Notification clicked for enable mode - redirecting to mods tab');
-        chrome.tabs.create({ url: 'opera://configure/mods/manage' });
-        chrome.notifications.clear(notificationId);
-        return;
-      }
+async function clearPendingNotification(modId = null) {
+  const { pendingNotification } = await storage.get('pendingNotification');
+  if (modId && pendingNotification?.modId !== modId) return;
+  if (scheduledNotificationTimer) { clearTimeout(scheduledNotificationTimer); scheduledNotificationTimer = null; }
+  if (pendingNotification?.notificationId) chrome.notifications.clear(pendingNotification.notificationId);
+  chrome.notifications.clear('modRandomizerAlert');
+  await storage.remove('pendingNotification');
+}
 
-      console.log(`Notification clicked for ${pendingNotification.modName} - triggering uninstall`);
-
-      // Clear notification immediately
-      chrome.notifications.clear(notificationId);
-
-      // Also hide it in any open popup/sidebar
-      tryDeliverToPopup({ action: 'hideMissedNotification' });
-
-      // Trigger uninstall IMMEDIATELY using this click event (user gesture) - MUST be synchronous
-      chrome.management.uninstall(pendingNotification.modId, { showConfirmDialog: true }, () => {
-        if (chrome.runtime.lastError) {
-          console.log('Uninstall cancelled by user');
-        } else {
-          console.log('Mod uninstalled successfully from notification');
-        }
-        // Clear storage after uninstall completes (whether cancelled or not)
-        chrome.storage.local.remove('pendingNotification');
-      });
-
-      // Redirect immediately (don't wait for uninstall to complete)
-      if (pendingNotification.reinstallUrl) {
-        chrome.tabs.create({ url: pendingNotification.reinstallUrl });
-      }
-    });
-  }
-});
-
-// Clean up on notification dismiss
-chrome.notifications.onClosed.addListener(async (notificationId) => {
-  if (notificationId === 'modRandomizerAlert') {
-    const s = await storage.get('pendingNotification');
-    if (s.pendingNotification && s.pendingNotification.uninstallMode) {
-      console.log('Notification dismissed, keeping pendingNotification in storage for popup fallback.');
-    } else {
-      await storage.remove('pendingNotification');
-      console.log('Notification dismissed, cleared pending action');
-    }
-  }
-});
-// ---------- Alarms & Scheduling ----------
-async function setRandomizeTime(minutes) {
-  const parsed = parseFloat(minutes);
-  if (isNaN(parsed)) {
-    console.warn('setRandomizeTime -> invalid number', minutes);
+// Payload lives in the notification ID, so a cold service worker can call uninstall
+// directly in the click event, without awaiting storage or a network operation.
+chrome.notifications.onClicked.addListener(notificationId => {
+  const mod = modFromNotificationId(notificationId);
+  if (!mod) {
+    if (notificationId === 'modRandomizerAlert') chrome.tabs.create({ url: 'opera://configure/mods/manage' });
     return;
   }
-
-  // Clear existing alarm first
-  chrome.alarms.clear('randomizeAlarm', () => {
-    // then schedule if needed
-    if (parsed === 0) {
-      storage.set({ randomizeTime: parsed });
-      console.log('setRandomizeTime -> disabled (0)');
+  uninstallFromGesture(mod, error => {
+    if (error) {
+      tryDeliverToPopup({ action: 'uninstallFailed', message: error.message });
       return;
     }
-    if (parsed < MIN_RANDOMIZE_MINUTES) {
-      console.warn(`setRandomizeTime -> refused to set below ${MIN_RANDOMIZE_MINUTES} minutes.`);
-      return;
-    }
+    chrome.notifications.clear(notificationId);
+    serializeState(() => clearPendingNotification(mod.id)).catch(console.error);
+  }, chrome);
+});
+// Closing an OS notification leaves the explicit Reinstall action available in UI.
 
-    storage.set({ randomizeTime: parsed }).then(() => {
-      chrome.alarms.create('randomizeAlarm', { delayInMinutes: parsed, periodInMinutes: parsed });
-      console.log(`setRandomizeTime -> scheduled randomizeAlarm every ${parsed} minutes`);
-    });
-  });
+// ---------- Alarms & Scheduling ----------
+async function setRandomizeTime(minutes) {
+  const parsed = Number(minutes);
+  if (!Number.isFinite(parsed) || parsed < 0 || (parsed > 0 && parsed < MIN_RANDOMIZE_MINUTES)) {
+    throw new Error(`Interval must be zero or at least ${MIN_RANDOMIZE_MINUTES} minutes.`);
+  }
+  await callbackCall(cb => chrome.alarms.clear('randomizeAlarm', cb));
+  await storage.set({ randomizeTime: parsed });
+  const { toggleRandomizeOnSetTimeChecked } = await storage.get('toggleRandomizeOnSetTimeChecked');
+  if (parsed > 0 && toggleRandomizeOnSetTimeChecked) {
+    await chrome.alarms.create('randomizeAlarm', { delayInMinutes: parsed, periodInMinutes: parsed });
+  }
 }
 
 // ---------- Message handling ----------
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  (async () => {
+  serializeState(async () => {
     try {
       switch (message.action) {
         case 'identifyModExtensions': {
@@ -603,7 +511,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // Return only detected mods (so popup shows only mods), plus profiles + activeProfile
           const { detectedModList = [] } = await storage.get('detectedModList');
           const { profiles = {}, activeProfile = 'Default' } = await storage.get(['profiles', 'activeProfile']);
-          const { autoModIdentificationChecked = true } = await storage.get('autoModIdentificationChecked');
+          const { autoModIdentificationChecked = false } = await storage.get('autoModIdentificationChecked');
           sendResponse({ detectedModList, profiles, activeProfile, autoModIdentificationChecked });
           console.log('Message: getExtensions -> returned detectedModList + profiles');
           break;
@@ -611,11 +519,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         case 'saveModExtensionIds': {
           // message.profileName optional - if provided save to that profile; else to activeProfile
-          const { modExtensionIds = [], profileName } = message;
+          const { profileName } = message;
           const s = await storage.get(['profiles', 'activeProfile']);
           const profiles = s.profiles || {};
           const active = profileName || s.activeProfile || 'Default';
-          profiles[active] = Array.isArray(modExtensionIds) ? modExtensionIds : [];
+          if (!Object.hasOwn(profiles, active)) throw new Error('Profile no longer exists');
+          const ids = new Set(profiles[active]);
+          if (message.changes) {
+            for (const [id, checked] of Object.entries(message.changes)) {
+              if (checked) ids.add(id); else ids.delete(id);
+            }
+          } else {
+            throw new Error('Profile selection changes are required');
+          }
+          profiles[active] = [...ids];
           await storage.set({ profiles });
           console.log(`Saved ${profiles[active].length} ids to profile '${active}'`);
           sendResponse({ status: 'success' });
@@ -627,25 +544,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await identifyModExtensions();
           await addDetectedModsToAllProfiles(!!autoModIdentificationChecked);
           console.log('popupOpened -> identification done (profiles updated only for newly detected mods and only if randomize-all OFF)');
-          // Give popup any pendingRandomization and then clear it (popup will display)
-          const { pendingRandomization } = await storage.get('pendingRandomization');
-          if (pendingRandomization) {
-            // Try to send; if popup isn't actively listening, storage fallback remains.
-            try {
-              chrome.runtime.sendMessage({ action: 'randomizationCompleted', enabledExtension: pendingRandomization.enabledExtension }, () => {
-                // Suppress 'Receiving end does not exist' if popup closed immediately
-                if (chrome.runtime.lastError) {
-                  console.debug('popupOpened: sendMessage ignored (popup likely closed)', chrome.runtime.lastError.message);
-                } else {
-                  console.log('popupOpened -> sent runtime randomizationCompleted to popup');
-                }
-              });
-            } catch (e) {
-              console.debug('popupOpened: runtime.sendMessage likely no listener; popup will read from storage.', e && e.message);
-            }
-            // Optionally keep or clear pending event; we'll clear so it doesn't show again
-            await storage.remove('pendingRandomization');
-          }
+          await cleanupUndetectedMods();
           sendResponse({ status: 'success' });
           break;
         }
@@ -684,7 +583,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const { profileName } = message;
           const name = (profileName || '').trim();
           const { profiles = {} } = await storage.get('profiles');
-          if (!name) {
+          if (!name || ['__proto__', 'constructor', 'prototype'].includes(name)) {
             sendResponse({ status: 'error', message: 'Profile name cannot be empty' });
             break;
           }
@@ -716,6 +615,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
 
           delete profiles[profileName];
+          const { profilesOrder = {} } = await storage.get('profilesOrder');
+          delete profilesOrder[profileName];
 
           // Determine remaining profiles
           let remaining = Object.keys(profiles);
@@ -731,7 +632,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // Pick a new active if needed
           if (active === profileName) active = remaining[0] || 'Default';
 
-          await storage.set({ profiles, activeProfile: active });
+          await storage.set({ profiles, profilesOrder, activeProfile: active });
           console.log('Deleted profile', profileName, 'new active', active);
           sendResponse({ status: 'success', activeProfile: active });
           break;
@@ -746,7 +647,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             sendResponse({ status: 'error', message: 'Old profile not found' });
             break;
           }
-          if (!newN) {
+          if (!newN || ['__proto__', 'constructor', 'prototype'].includes(newN)) {
             sendResponse({ status: 'error', message: 'New profile name cannot be empty' });
             break;
           }
@@ -757,11 +658,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             sendResponse({ status: 'error', message: 'New profile name already exists' });
             break;
           }
+          if (newN === oldN) { sendResponse({ status: 'success', activeProfile }); break; }
+          const { profilesOrder = {} } = await storage.get('profilesOrder');
+          if (Object.hasOwn(profilesOrder, oldN)) { profilesOrder[newN] = profilesOrder[oldN]; delete profilesOrder[oldN]; }
           // Perform rename (allow case-only change as well)
           profiles[newN] = profiles[oldN];
           delete profiles[oldN];
           const newActive = (activeProfile === oldN) ? newN : activeProfile;
-          await storage.set({ profiles, activeProfile: newActive });
+          await storage.set({ profiles, profilesOrder, activeProfile: newActive });
           console.log(`Renamed profile ${oldN} -> ${newN}`);
           sendResponse({ status: 'success', activeProfile: newActive });
           break;
@@ -786,13 +690,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
         case 'clearMissedNotification': {
           console.log('Clearing missed notification across UI and OS');
-          await storage.remove('pendingNotification');
-          chrome.notifications.clear('modRandomizerAlert');
-          tryDeliverToPopup({ action: 'hideMissedNotification' });
+          await clearPendingNotification(message.modId);
           sendResponse({ status: 'success' });
           break;
         }
 
+        case 'ensureProfilesOrder': {
+          sendResponse(await ensureProfilesOrder());
+          break;
+        }
+        case 'importProfiles': {
+          sendResponse(await importProfileData(message.data));
+          break;
+        }
         default:
           console.warn('Unknown message action:', message.action);
           sendResponse({ status: 'error', message: 'Unknown action' });
@@ -801,7 +711,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       console.error('onMessage handling error', err);
       sendResponse({ status: 'error', message: err && err.message });
     }
-  })();
+  }).catch(error => sendResponse({ status: 'error', message: error.message }));
   return true;
 });
 
@@ -809,7 +719,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.alarms.onAlarm.addListener(async alarm => {
   if (alarm.name === 'randomizeAlarm') {
     console.log('Alarm fired: randomizeAlarm');
-    await executeRandomization('alarm');
+    await serializeState(() => executeRandomization('alarm'));
   }
 });
 
@@ -822,11 +732,11 @@ chrome.runtime.onStartup.addListener(async () => {
   }
   if (s.toggleRandomizeOnStartupChecked) {
     console.log('onStartup -> toggleRandomizeOnStartupChecked true; scheduling startup randomize');
-    setTimeout(() => executeRandomization('startup'), 1000);
+    setTimeout(() => serializeState(() => executeRandomization('startup')).catch(console.error), 1000);
   }
 });
 
-chrome.runtime.onInstalled.addListener(async details => {
+chrome.runtime.onInstalled.addListener(details => serializeState(async () => {
   if (details.reason === 'install') {
     // Initialize sensible defaults
     await storage.set({
@@ -867,23 +777,16 @@ chrome.runtime.onInstalled.addListener(async details => {
     await identifyModExtensions();
   }
   await ensureDefaults();
-});
+}).catch(console.error));
 
 // Monitor for mod installation/uninstallation/enabling/disabling
 const updateDetectedMods = async () => {
   console.log('Management event detected, updating mod list...');
-  await identifyModExtensions();
+  await identifyModExtensions(true);
   const s = await storage.get('autoModIdentificationChecked');
   await addDetectedModsToAllProfiles(!!s.autoModIdentificationChecked);
 
-  // Notify connected popup/sidebar
-  if (popupPort) {
-    try {
-      popupPort.postMessage({ action: 'extensionsUpdated' });
-    } catch (e) {
-      console.warn('Failed to notify popup', e);
-    }
-  }
+  tryDeliverToPopup({ action: 'extensionsUpdated' });
 };
 
 const onInstalled = async (details) => {
@@ -909,6 +812,126 @@ const onUninstalled = async (id) => {
   await updateDetectedMods();
 };
 
-chrome.management.onInstalled.addListener(onInstalled);
-chrome.management.onUninstalled.addListener(onUninstalled);
+chrome.management.onInstalled.addListener(details => serializeState(() => onInstalled(details)).catch(console.error));
+chrome.management.onUninstalled.addListener(id => serializeState(() => onUninstalled(id)).catch(console.error));
 // Removed onEnabled/onDisabled listeners as requested
+
+async function cleanupUndetectedMods() {
+  const state = await storage.get(['detectedModList', 'recentlyUninstalled', 'profiles', 'profilesOrder', 'knownDetectedIds']);
+  const validIds = new Set((state.detectedModList || []).map(mod => mod.id));
+  for (const [id, entry] of Object.entries(state.recentlyUninstalled || {})) {
+    const timestamp = typeof entry === 'number' ? entry : entry.timestamp;
+    if (Date.now() - timestamp < 60000) validIds.add(id);
+  }
+  const profiles = state.profiles || {};
+  const profilesOrder = state.profilesOrder || {};
+  let changed = false;
+  for (const collection of [profiles, profilesOrder]) {
+    for (const name of Object.keys(collection)) {
+      const before = collection[name];
+      collection[name] = before.filter(id => validIds.has(id));
+      if (before.length !== collection[name].length) changed = true;
+    }
+  }
+  const knownDetectedIds = (state.knownDetectedIds || []).filter(id => validIds.has(id));
+  if (changed || knownDetectedIds.length !== (state.knownDetectedIds || []).length) {
+    await storage.set({ profiles, profilesOrder, knownDetectedIds });
+  }
+}
+
+async function ensureProfilesOrder() {
+    const st = await storage.get(['profilesOrder', 'profiles']);
+    const profiles = st.profiles || {};
+    let profilesOrder = st.profilesOrder || {};
+    let changed = false;
+    for (const profileName of Object.keys(profiles)) {
+        if (!profilesOrder[profileName]) {
+            profilesOrder[profileName] = Array.isArray(profiles[profileName]) ? [...profiles[profileName]] : [];
+            changed = true;
+        } else {
+            const enabled = Array.isArray(profiles[profileName]) ? profiles[profileName] : [];
+            const orderSet = new Set(profilesOrder[profileName]);
+            for (const id of enabled) {
+                if (!orderSet.has(id)) {
+                    profilesOrder[profileName].push(id);
+                    orderSet.add(id);
+                    changed = true;
+                }
+            }
+        }
+    }
+    if (changed) {
+        await storage.set({ profilesOrder });
+        console.log('Initialized/updated profilesOrder');
+    }
+    return profilesOrder;
+}
+
+
+async function importProfileData(importData) {
+  if (!importData?.profiles || Array.isArray(importData.profiles) || typeof importData.profiles !== 'object') throw new Error('Invalid profile file format');
+  const s = await storage.get(['profiles', 'profilesOrder', 'detectedModList']);
+  const existingProfiles = s.profiles || {};
+  const existingOrder = s.profilesOrder || {};
+  const detectedModList = s.detectedModList || [];
+
+  const modNameToId = new Map(detectedModList.map(m => [m.name.toLowerCase(), m.id]));
+  const detectedIds = new Set(detectedModList.map(m => m.id));
+
+  const results = {
+      imported: [],
+      skipped: [],
+      missingMods: {}
+  };
+
+  for (const [profileName, modsArray] of Object.entries(importData.profiles)) {
+      if (!profileName.trim() || ['__proto__', 'constructor', 'prototype'].includes(profileName) || !Array.isArray(modsArray)) throw new Error('Invalid profile');
+      const existingNames = Object.keys(existingProfiles).map(n => n.toLowerCase());
+      if (existingNames.includes(profileName.toLowerCase())) {
+          results.skipped.push(profileName);
+          continue;
+      }
+
+      if (!modsArray || modsArray.length === 0) {
+          existingProfiles[profileName] = [];
+          existingOrder[profileName] = [];
+          results.imported.push(profileName);
+          continue;
+      }
+
+      const validModIds = [];
+      const missingMods = [];
+
+      for (const mod of modsArray) {
+          if (!mod || (typeof mod !== 'string' && typeof mod !== 'object')) throw new Error('Invalid mod entry');
+          const modId = mod.id || mod;
+          const modName = mod.name;
+
+          if (detectedIds.has(modId)) {
+              validModIds.push(modId);
+          } else if (typeof modName === 'string') {
+              const matchedId = modNameToId.get(modName.toLowerCase());
+              if (matchedId) {
+                  validModIds.push(matchedId);
+              } else {
+                  missingMods.push(modName);
+              }
+          } else {
+              missingMods.push(`Unknown (${modId})`);
+          }
+      }
+
+      existingProfiles[profileName] = validModIds;
+      existingOrder[profileName] = validModIds;
+
+      results.imported.push(profileName);
+      if (missingMods.length > 0) {
+          results.missingMods[profileName] = missingMods;
+      }
+  }
+
+  if (results.imported.length > 0) {
+      await storage.set({ profiles: existingProfiles, profilesOrder: existingOrder });
+  }
+  return results;
+}

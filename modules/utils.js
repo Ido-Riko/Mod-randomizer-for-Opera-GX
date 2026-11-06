@@ -42,7 +42,7 @@ export function showModal(title, message, buttons, inputConfig = null) {
                     inputEl.removeEventListener('keydown', inputEl._enterHandler);
                     delete inputEl._enterHandler;
                 }
-                resolve(inputConfig ? inputEl.value : btn.value);
+                resolve(inputConfig && btn.value !== null ? inputEl.value : btn.value);
             };
             buttonsEl.appendChild(button);
         });

@@ -1,6 +1,7 @@
+import { uninstallFromGesture } from './modules/reinstall.js';
 import { port, storageGet, storageSet, sendMsg } from './modules/api.js';
 import {
-    showModal, customAlert, customConfirm, customConfirmDanger, customPrompt,
+    customAlert, customConfirmDanger, customPrompt,
     toMinutes, fromMinutesFormat
 } from './modules/utils.js';
 import {
@@ -19,75 +20,41 @@ document.addEventListener('DOMContentLoaded', () => {
     // 1. Initialize Elements
     const els = initEls();
 
-    // Helper for showMissedNotification (used by both runtime and port messages)
+    function offerReinstall(mod) {
+        showModMessage(mod, true);
+        showMissedNotificationMessage(mod, () => {
+            uninstallFromGesture(mod, error => {
+                if (error) {
+                    showError(error.message || 'Uninstall cancelled.');
+                    return;
+                }
+                sendMsg('clearMissedNotification', { modId: mod.id }).catch(error => showError(error.message));
+                if (isSidebar) clearEnabledMessage();
+                else window.close();
+            }, chrome);
+        });
+    }
     async function handleMissedNotification(mod) {
-        console.log('Sidebar/Popup received showMissedNotification via runtime/port');
-        const s = await chrome.storage.local.get('uninstallAndReinstallChecked');
-        const isUninstallOn = s.uninstallAndReinstallChecked === undefined ? true : !!s.uninstallAndReinstallChecked;
-        if (isUninstallOn) {
-            clearEnabledMessage();
-            removeRedirectMessage();
-
-            await showModMessage(mod, true);
-            showMissedNotificationMessage(mod, () => {
-                chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
-                chrome.tabs.create({ url: mod.reinstallUrl });
-                chrome.management.uninstall(mod.id, { showConfirmDialog: true }, async () => {
-                    if (chrome.runtime.lastError) {
-                        if (isSidebar) setTimeout(clearEnabledMessage, 500);
-                    } else {
-                        if (!isSidebar) {
-                            window.close();
-                        }
-                    }
-                });
-            });
-        }
+        const s = await storageGet('uninstallAndReinstallChecked');
+        if (s.uninstallAndReinstallChecked !== false) offerReinstall(mod);
     }
 
     // Helper for hideMissedNotification
     function hideNotification() {
-        console.log('Sidebar/Popup received hideMissedNotification via runtime/port');
-        chrome.storage.local.remove('pendingNotification');
         clearEnabledMessage();
         removeRedirectMessage();
     }
 
-    // 2. Listen for messages from background (Port and Runtime)
-    chrome.runtime.onMessage.addListener((msg) => {
-        if (!msg || !msg.action) return;
-
-        if (msg.action === 'hideMissedNotification') {
-            hideNotification();
-        }
-
-        if (msg.action === 'showMissedNotification' && msg.mod) {
-            handleMissedNotification(msg.mod);
-        }
-    });
-
+    // Transient events use ports; durable state updates use storage.onChanged.
     port.onMessage.addListener(async (msg) => {
         if (!msg || !msg.action) return;
 
-        if (msg.action === 'randomizationCompleted' && msg.enabledExtension) {
-            await showModMessage(msg.enabledExtension, false);
-            refreshCurrentMod();
-            console.log('Popup received randomizationCompleted via port');
-            if (msg.pendingId) {
-                port.postMessage({ action: 'randomizationAck', pendingId: msg.pendingId });
-            }
-        }
-
-        if (msg.action === 'showMissedNotification' && msg.mod) {
-            await handleMissedNotification(msg.mod);
-        }
-
-        if (msg.action === 'hideMissedNotification') {
-            hideNotification();
-        }
+        if (msg.action === 'uninstallFailed') showError(msg.message);
 
         if (msg.action === 'extensionsUpdated') {
-            console.log('Received extensionsUpdated from background');
+            await loadAndRenderProfiles();
+            const { pendingNotification: pending } = await storageGet('pendingNotification');
+            if (pending?.uninstallMode) await handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
             await renderExtensionList();
             await refreshCurrentMod();
         }
@@ -116,9 +83,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Notify background
         await sendMsg('popupOpened');
-
-        // This function from original logic cleaned up unknown IDs
-        await cleanupUndetectedMods();
 
         // Load Toggles & Inputs
         const s = await storageGet([
@@ -156,113 +120,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 name: s.pendingNotification.modName,
                 reinstallUrl: s.pendingNotification.reinstallUrl
             };
-            await showModMessage(mod, true);
-            showMissedNotificationMessage(mod, () => {
-                chrome.runtime.sendMessage({ action: 'clearMissedNotification' });
-                chrome.tabs.create({ url: mod.reinstallUrl });
-                chrome.management.uninstall(mod.id, { showConfirmDialog: true }, async () => {
-                    if (chrome.runtime.lastError) {
-                        if (isSidebar) setTimeout(clearEnabledMessage, 500);
-                    } else {
-                        if (!isSidebar) {
-                            window.close();
-                        }
-                    }
-                });
-            });
+            offerReinstall(mod);
         }
 
         await loadAndRenderProfiles();
         await renderExtensionList();
         await refreshCurrentMod();
 
-        port.postMessage({ action: 'popupReady' });
-        console.log('Popup initialized, sent popupReady via port');
+
     })();
-
-    // 5. Cleanup Logic
-    async function cleanupUndetectedMods() {
-        const resp = await sendMsg('getExtensions');
-        const detected = resp?.detectedModList || [];
-        const detectedIds = new Set(detected.map(d => d.id));
-
-        const st = await storageGet(['profilesOrder', 'profiles', 'knownDetectedIds']);
-        let changed = false;
-
-        // Only run if we detect a mismatch
-        const detectedCount = detected.length;
-        const storedCount = (st.knownDetectedIds || []).length;
-        if (detectedCount === storedCount) {
-            // Optimization: simplistic check
-            // In real rigorous check we'd compare content, but this is fine as per original logic
-        }
-
-        // Clean knownDetectedIds
-        const knownIds = (st.knownDetectedIds || []).filter(id => detectedIds.has(id));
-
-        // Check grace period for uninstalled mods
-        const recentlyUninstalled = (await storageGet('recentlyUninstalled')).recentlyUninstalled || {};
-        const now = Date.now();
-        const GRACE_PERIOD_MS = 60 * 1000;
-
-        // Restore mods that are missing but within grace period
-        // We need to re-add them to profiles if they were removed? 
-        // Actually, the logic above filters profilesOrder and profiles based on detectedIds.
-        // We should MODIFY that filter to include grace-period IDs.
-
-        const gracePeriodIds = new Set();
-        for (const [id, timestamp] of Object.entries(recentlyUninstalled)) {
-            if (now - timestamp < GRACE_PERIOD_MS) {
-                gracePeriodIds.add(id);
-            }
-        }
-
-        // Re-run the cleanup logic but allow gracePeriodIds
-        let profilesChanged = false;
-
-        // Clean profilesOrder
-        // We need to re-fetch or use the original 'st' but the logic above already drifted. 
-        // Let's rewrite the loop to be safer:
-
-        const validIds = new Set([...detectedIds, ...gracePeriodIds]);
-
-        const profilesOrder = st.profilesOrder || {};
-        for (const profileName of Object.keys(profilesOrder)) {
-            const before = profilesOrder[profileName].length;
-            profilesOrder[profileName] = profilesOrder[profileName].filter(id => validIds.has(id));
-            if (profilesOrder[profileName].length !== before) profilesChanged = true;
-        }
-
-        // Clean profiles
-        const profiles = st.profiles || {};
-        for (const profileName of Object.keys(profiles)) {
-            const before = profiles[profileName].length;
-            profiles[profileName] = profiles[profileName].filter(id => validIds.has(id));
-            if (profiles[profileName].length !== before) profilesChanged = true;
-        }
-
-        // Clean knownDetectedIds - we only keep genuinely detected ones here to avoid drift?
-        // Or should we keep grace ones? 
-        // If we keep grace ones in knownDetectedIds, next time we won't add them as "new".
-        // Let's keep validIds here too.
-        const newKnownIds = (st.knownDetectedIds || []).filter(id => validIds.has(id));
-
-        if (profilesChanged || newKnownIds.length !== (st.knownDetectedIds || []).length) {
-            await storageSet({ profilesOrder, profiles, knownDetectedIds: newKnownIds });
-            console.log('Cleaned up undetected mod IDs (respecting grace period)');
-        }
-    }
 
     // 6. Event Handlers
 
     // Profile Change
     els.profileSelect.addEventListener('change', async (e) => {
         const profileName = e.target.value;
-        if (getRenderLock()) return;
-
-        // Cancel pending manual save if switching
-        // Ideally we'd implement clearDebounce in ui.js but simplicity here:
-        // switch happens, rendering will assume new profile
+        if (getRenderLock()) { e.target.value = getCurrentProfile(); return; }
 
         setCurrentProfile(profileName);
         await sendMsg('setActiveProfile', { profileName });
@@ -307,11 +180,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const r = await sendMsg('deleteProfile', { profileName });
         if (r && r.status === 'success') {
-            // remove from profilesOrder
-            const st = await storageGet('profilesOrder');
-            const po = st.profilesOrder || {};
-            if (po[profileName]) { delete po[profileName]; await storageSet({ profilesOrder: po }); }
-
             await loadAndRenderProfiles();
             await renderExtensionList();
         } else {
@@ -389,6 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             if (parsed === 0) {
+                lastSubmittedMinutes = null;
                 await sendMsg('setRandomizeTime', { time: 0 });
                 els.timeInput.value = '';
                 return;
@@ -406,8 +275,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const minutes = toMinutes(parsed, unit);
             if (lastSubmittedMinutes === minutes) return;
-            lastSubmittedMinutes = minutes;
             await sendMsg('setRandomizeTime', { time: minutes });
+            lastSubmittedMinutes = minutes;
 
         }, 400);
     }
@@ -462,9 +331,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let redirectTimeoutId = null;
 
     els.randomizeButton.addEventListener('click', async () => {
+        if (els.randomizeButton.disabled) return;
+        els.randomizeButton.disabled = true;
         try {
-            chrome.storage.local.remove('pendingNotification');
-            chrome.notifications.clear('modRandomizerAlert');
+            await sendMsg('clearMissedNotification');
             if (redirectTimeoutId) {
                 clearTimeout(redirectTimeoutId);
                 redirectTimeoutId = null;
@@ -482,17 +352,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (uninstallAndReinstall && modToProcess.reinstallUrl) {
-                await showModMessage(modToProcess, true);
-                chrome.tabs.create({ url: modToProcess.reinstallUrl });
-
-                chrome.management.uninstall(modToProcess.id, { showConfirmDialog: true }, () => {
-                    if (chrome.runtime.lastError) {
-                        if (isSidebar) setTimeout(clearEnabledMessage, 500);
-                    } else {
-                        if (isSidebar) clearEnabledMessage();
-                        else window.close();
-                    }
-                });
+                offerReinstall(modToProcess);
             } else {
                 await showModMessage(modToProcess, uninstallAndReinstall && !modToProcess.reinstallUrl);
 
@@ -510,6 +370,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error(error);
             showError(error.message || 'Unknown error');
+        } finally {
+            els.randomizeButton.disabled = false;
         }
     });
 
@@ -517,6 +379,11 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
         if (changes.currentMod) refreshCurrentMod();
+        if (changes.pendingNotification) {
+            const pending = changes.pendingNotification.newValue;
+            if (pending?.uninstallMode) handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
+            else hideNotification();
+        }
 
         const shouldReloadProfiles =
             (changes.profiles && typeof changes.profiles.newValue === 'object' && typeof changes.profiles.oldValue === 'object' &&
