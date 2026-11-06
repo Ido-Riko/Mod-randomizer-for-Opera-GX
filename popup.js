@@ -90,9 +90,10 @@ document.addEventListener('DOMContentLoaded', () => {
             'openModsTabChecked', 'showNotificationsChecked',
             'toggleRandomizeOnStartupChecked', 'toggleRandomizeOnSetTimeChecked',
             'randomizeTime', 'timeUnit', 'currentMod', 'pendingNotification',
-            'disableModsOutsideProfileChecked'
+            'disableModsOutsideProfileChecked', 'shuffleBagChecked'
         ]);
 
+        if (els.shuffleBagToggle) els.shuffleBagToggle.checked = s.shuffleBagChecked !== false;
         const randomizeAll = s.autoModIdentificationChecked === undefined ? false : !!s.autoModIdentificationChecked;
         if (els.autoModToggle) els.autoModToggle.checked = randomizeAll;
         if (els.disableOutsideProfileToggle) els.disableOutsideProfileToggle.checked = !!s.disableModsOutsideProfileChecked;
@@ -221,6 +222,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    els.shuffleBagToggle?.addEventListener('change', async () => {
+        const value = els.shuffleBagToggle.checked;
+        try {
+            await sendMsg('setShuffleBag', { value });
+        } catch (error) {
+            const s = await storageGet('shuffleBagChecked');
+            els.shuffleBagToggle.checked = s.shuffleBagChecked !== false;
+            showError(error.message);
+        }
+    });
     els.autoModToggle.addEventListener('change', () => onToggleChange('autoModIdentificationChecked', els.autoModToggle));
     if (els.disableOutsideProfileToggle) {
         els.disableOutsideProfileToggle.addEventListener('change', () => onToggleChange('disableModsOutsideProfileChecked', els.disableOutsideProfileToggle));
@@ -379,6 +390,9 @@ document.addEventListener('DOMContentLoaded', () => {
     chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local') return;
         if (changes.currentMod) refreshCurrentMod();
+        if (changes.shuffleBagChecked && els.shuffleBagToggle) {
+            els.shuffleBagToggle.checked = changes.shuffleBagChecked.newValue !== false;
+        }
         if (changes.pendingNotification) {
             const pending = changes.pendingNotification.newValue;
             if (pending?.uninstallMode) handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
@@ -405,3 +419,4 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
 });
+

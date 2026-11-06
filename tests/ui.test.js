@@ -7,7 +7,7 @@ import { uninstallFromGesture, validReinstallMod, notificationIdFor, modFromNoti
 function uiEnvironment(sidebar = false) {
     let gesture = false;
     const env = environment({ data: { uninstallAndReinstallChecked: true }, requireGesture: true, gesture: () => gesture });
-    const names = ['profileSelect','newProfileBtn','deleteProfileBtn','autoModToggle','disableOutsideProfileToggle','openModsToggle','openModsTabToggle','showNotificationsToggle','startupToggle','setTimeToggle','timeInput','timeUnit','randomizeButton','extensionList','searchBar','currentMod','message','toggleAllBtn','reverseAllBtn'];
+    const names = ['profileSelect','newProfileBtn','deleteProfileBtn','autoModToggle','shuffleBagToggle','disableOutsideProfileToggle','openModsToggle','openModsTabToggle','showNotificationsToggle','startupToggle','setTimeToggle','timeInput','timeUnit','randomizeButton','extensionList','searchBar','currentMod','message','toggleAllBtn','reverseAllBtn'];
     const els = Object.fromEntries(names.map(name => [name, element()]));
     const dom = new Map(); let ready, reinstallClick, closed = false;
     const timers = new Map(); let timer = 0;
@@ -127,3 +127,16 @@ test('real checkbox saver sends deltas immediately and reconciles rapid edits', 
     assert.equal(context.getRenderLock(), false);
     assert.equal(list.querySelectorAll().every(cb => !cb.checked), true);
 });
+
+for (const sidebar of [false, true]) {
+    test(`${sidebar ? 'sidebar' : 'popup'} shuffle defaults on, saves and syncs storage changes`, async () => {
+        const ui = uiEnvironment(sidebar); await flush();
+        assert.equal(ui.els.shuffleBagToggle.checked, true);
+        ui.els.shuffleBagToggle.checked = false;
+        await ui.els.shuffleBagToggle.listeners.change();
+        assert.equal(ui.data.shuffleBagChecked, false);
+        assert.deepEqual(ui.data.shuffleBags, {});
+        ui.chrome.storage.local.set({ shuffleBagChecked: true }); await flush();
+        assert.equal(ui.els.shuffleBagToggle.checked, true);
+    });
+}

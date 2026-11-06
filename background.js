@@ -223,6 +223,29 @@ async function pickNextMod(modsForRandomization, specificModId = null, lastEnabl
   return selected;
 }
 
+// Each profile (and all-mods mode) keeps its own completed draws across worker restarts.
+function shuffleBagKey(profileName, useAll = false) {
+  return JSON.stringify(useAll ? ['all'] : ['profile', profileName]);
+}
+
+function planShuffleDraw(mods, activeList, previousSeen, lastEnabledId) {
+  const eligible = new Set(activeList);
+  let seen = [...new Set(Array.isArray(previousSeen) ? previousSeen : [])].filter(id => eligible.has(id));
+  let candidates = mods.filter(mod => !seen.includes(mod.id));
+  if (!candidates.length) {
+    seen = [];
+    candidates = mods;
+  }
+  // Avoid repeating the last mod at a cycle boundary when alternatives exist.
+  if (!seen.length) {
+    const alternatives = candidates.filter(mod => mod.id !== lastEnabledId);
+    if (alternatives.length) candidates = alternatives;
+  }
+  if (!candidates.length) return null;
+  const selected = candidates[Math.floor(Math.random() * candidates.length)];
+  return { selected, seen: [...seen, selected.id] };
+}
+
 async function enableMod(selectedMod, modsToDisable) {
   const currentlyEnabled = modsToDisable.filter(m => m.enabled && m.id !== selectedMod.id);
   await Promise.all(currentlyEnabled.map(m => management.setEnabled(m.id, false)));
@@ -382,7 +405,7 @@ async function executeRandomization(source = 'unknown') {
       'autoModIdentificationChecked', 'openModsTabChecked',
       'showNotificationsChecked', 'lastEnabledModId',
       'toggleRandomizeOnSetTimeChecked', 'lastRandomizationTime',
-      'disableModsOutsideProfileChecked'
+      'disableModsOutsideProfileChecked', 'shuffleBagChecked', 'shuffleBags'
     ]);
 
     if (source === 'alarm' && !s.toggleRandomizeOnSetTimeChecked) {
@@ -417,23 +440,29 @@ async function executeRandomization(source = 'unknown') {
       await disableModsOutsideActiveProfile(activeProfileList);
     }
 
-    let result = null;
+    const all = await management.getAll();
+    const mods = all.filter(mod => activeList.includes(mod.id));
+    const bagKey = shuffleBagKey(s.activeProfile, useAll);
+    const shuffleOn = s.shuffleBagChecked !== false;
+    const draw = shuffleOn
+      ? planShuffleDraw(mods, activeList, s.shuffleBags?.[bagKey], s.lastEnabledModId)
+      : null;
+    const selected = shuffleOn ? draw?.selected : await pickNextMod(mods, null, s.lastEnabledModId);
+    if (!selected) return null;
 
+    let result;
     if (s.uninstallAndReinstallChecked) {
-      const all = await management.getAll();
-      const mods = all.filter(e => activeList.includes(e.id));
-      const selected = await pickNextMod(mods, null, s.lastEnabledModId);
-
-      if (!selected) return null;
-
       const reinstallUrl = getModUrlByName(selected.name);
       result = await handleUninstallWorkflow(selected, reinstallUrl, activeList, source, s);
     } else {
-      console.log('[executeRandomization] Uninstall off, calling handleModEnableWorkflow');
-      result = await handleModEnableWorkflow(activeList, source);
+      result = await handleModEnableWorkflow(activeList, source, selected.id);
     }
 
-    await storage.set({ lastRandomizationTime: nowMs() });
+    // A failed enable must not consume a draw. Reinstall confirmation is a later,
+    // optional action: the selected mod has already been enabled at this point.
+    const updates = { lastRandomizationTime: nowMs() };
+    if (shuffleOn) updates.shuffleBags = { ...s.shuffleBags, [bagKey]: draw.seen };
+    await storage.set(updates);
     return result;
   } catch (err) {
     console.error('[executeRandomization] error', err);
@@ -505,6 +534,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // Always use executeRandomization for any randomization from background
           const result = await executeRandomization('manual');
           sendResponse(result);
+          break;
+        }
+        case 'setShuffleBag': {
+          if (typeof message.value !== 'boolean') throw new Error('Invalid shuffle setting');
+          await storage.set({ shuffleBagChecked: message.value, shuffleBags: {} });
+          sendResponse({ status: 'success' });
           break;
         }
         case 'getExtensions': {
@@ -615,6 +650,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           }
 
           delete profiles[profileName];
+          const { shuffleBags = {} } = await storage.get('shuffleBags');
+          delete shuffleBags[shuffleBagKey(profileName)];
           const { profilesOrder = {} } = await storage.get('profilesOrder');
           delete profilesOrder[profileName];
 
@@ -632,7 +669,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           // Pick a new active if needed
           if (active === profileName) active = remaining[0] || 'Default';
 
-          await storage.set({ profiles, profilesOrder, activeProfile: active });
+          await storage.set({ profiles, profilesOrder, activeProfile: active, shuffleBags });
           console.log('Deleted profile', profileName, 'new active', active);
           sendResponse({ status: 'success', activeProfile: active });
           break;
@@ -661,11 +698,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           if (newN === oldN) { sendResponse({ status: 'success', activeProfile }); break; }
           const { profilesOrder = {} } = await storage.get('profilesOrder');
           if (Object.hasOwn(profilesOrder, oldN)) { profilesOrder[newN] = profilesOrder[oldN]; delete profilesOrder[oldN]; }
+          const { shuffleBags = {} } = await storage.get('shuffleBags');
+          const oldBagKey = shuffleBagKey(oldN);
+          if (Object.hasOwn(shuffleBags, oldBagKey)) {
+            shuffleBags[shuffleBagKey(newN)] = shuffleBags[oldBagKey];
+            delete shuffleBags[oldBagKey];
+          }
           // Perform rename (allow case-only change as well)
           profiles[newN] = profiles[oldN];
           delete profiles[oldN];
           const newActive = (activeProfile === oldN) ? newN : activeProfile;
-          await storage.set({ profiles, profilesOrder, activeProfile: newActive });
+          await storage.set({ profiles, profilesOrder, activeProfile: newActive, shuffleBags });
           console.log(`Renamed profile ${oldN} -> ${newN}`);
           sendResponse({ status: 'success', activeProfile: newActive });
           break;
@@ -748,6 +791,8 @@ chrome.runtime.onInstalled.addListener(details => serializeState(async () => {
       disableModsOutsideProfileChecked: false,
       toggleRandomizeOnSetTimeChecked: false,
       randomizeTime: 0,
+      shuffleBagChecked: true,
+      shuffleBags: {},
       currentMod: 'None'
     });
     console.log('Installed: default settings saved (randomize-all OFF)');
@@ -756,8 +801,9 @@ chrome.runtime.onInstalled.addListener(details => serializeState(async () => {
   } else if (details.reason === 'update') {
     console.log('Extension updated');
     // Migration: if key is missing, default appropriately
-    const s = await storage.get(['autoModIdentificationChecked', 'openModsTabChecked', 'showNotificationsChecked', 'disableModsOutsideProfileChecked']);
+    const s = await storage.get(['autoModIdentificationChecked', 'openModsTabChecked', 'showNotificationsChecked', 'disableModsOutsideProfileChecked', 'shuffleBagChecked']);
     const updates = {};
+    if (s.shuffleBagChecked === undefined) updates.shuffleBagChecked = true;
     if (s.autoModIdentificationChecked === undefined) {
       updates.autoModIdentificationChecked = false;
     }
@@ -935,3 +981,4 @@ async function importProfileData(importData) {
   }
   return results;
 }
+

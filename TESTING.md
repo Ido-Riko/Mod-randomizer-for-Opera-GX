@@ -6,7 +6,9 @@ GitHub Actions runs the same suite on pushes and pull requests.
 The tests execute the extension's JavaScript using mocked Chrome APIs and small
 DOM fixtures. They cover profile cleanup, concurrent profile changes and mod
 switches, exports, Cancel, timers, catalog failure/timeout, popup/sidebar state,
-and the synchronous invocation of uninstall from an explicit click.
+the synchronous invocation of uninstall from an explicit click, and shuffle cycles,
+persistence, independent profiles/all-mods bags, edits, failure handling, migration,
+and the advanced toggle in both views.
 
 ## Opera GX integration checklist
 
@@ -38,3 +40,14 @@ Use a disposable browser profile and mods you can reinstall.
 The extra Reinstall click is intentional: selection can require asynchronous work;
 uninstall itself must start directly from an explicit click. Both UI and background
 notification handlers use the same synchronous helper and request native confirmation.
+
+
+## Shuffle bag integration checks
+
+1. With three or more mods in a profile, confirm **Shuffle bag (no repeats)** is on
+   in Advanced Settings in both popup and sidebar. Randomize through two cycles:
+   each mod should appear once per cycle, with no repeat across the boundary.
+2. Close/reopen the browser midway through a cycle and verify remaining mods appear
+   before any repeats. Switch to another profile and back to check independent progress.
+3. Turn shuffle off in one view; the other view should update. Turn it back on to
+   start fresh bags. Repeat with **Randomize all mods** and with reinstall enabled.
