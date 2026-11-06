@@ -54,15 +54,19 @@ test('edits and newly installed mods reconcile with an unfinished bag', async ()
     assert.equal(await draw(env), C);
     assert.deepEqual(env.data.shuffleBags[key('Default')], [A, C]);
 });
-test('temporarily absent reinstall target retains its completed draw', async () => {
-    const env = three();
-    assert.equal(await draw(env), A);
-    const removed = env.mods.shift();
-    assert.notEqual(await draw(env), A);
-    env.mods.unshift(removed);
-    assert.equal(await draw(env), B);
-    assert.equal(new Set(env.data.shuffleBags[key('Default')]).size, 3);
-});
+for (const useAll of [false, true]) {
+    test(`temporarily absent reinstall target retains its draw in ${useAll ? 'all-mods' : 'profile'} mode`, async () => {
+        const env = three({ data: { autoModIdentificationChecked: useAll } });
+        const identify = () => { env.data.detectedModList = env.mods.map(({ id, name }) => ({ id, name })); };
+        identify();
+        assert.equal(await draw(env), A);
+        const removed = env.mods.shift(); identify();
+        assert.equal(await draw(env), C);
+        env.mods.unshift(removed); identify();
+        assert.equal(await draw(env), B);
+        assert.equal(new Set(env.data.shuffleBags[useAll ? allKey : key('Default')]).size, 3);
+    });
+}
 test('failed enables and empty pools consume no draws', async () => {
     const env = three({ failEnable: true });
     assert.equal((await env.message('getRandomMod')).status, 'error');

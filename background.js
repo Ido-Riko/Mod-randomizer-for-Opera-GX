@@ -228,9 +228,10 @@ function shuffleBagKey(profileName, useAll = false) {
   return JSON.stringify(useAll ? ['all'] : ['profile', profileName]);
 }
 
-function planShuffleDraw(mods, activeList, previousSeen, lastEnabledId) {
-  const eligible = new Set(activeList);
-  let seen = [...new Set(Array.isArray(previousSeen) ? previousSeen : [])].filter(id => eligible.has(id));
+function planShuffleDraw(mods, previousSeen, lastEnabledId) {
+  // Keep completed draws until cycle reset, even while a mod is temporarily
+  // absent during reinstall or excluded and re-added to the same profile.
+  let seen = [...new Set(Array.isArray(previousSeen) ? previousSeen : [])];
   let candidates = mods.filter(mod => !seen.includes(mod.id));
   if (!candidates.length) {
     seen = [];
@@ -445,7 +446,7 @@ async function executeRandomization(source = 'unknown') {
     const bagKey = shuffleBagKey(s.activeProfile, useAll);
     const shuffleOn = s.shuffleBagChecked !== false;
     const draw = shuffleOn
-      ? planShuffleDraw(mods, activeList, s.shuffleBags?.[bagKey], s.lastEnabledModId)
+      ? planShuffleDraw(mods, s.shuffleBags?.[bagKey], s.lastEnabledModId)
       : null;
     const selected = shuffleOn ? draw?.selected : await pickNextMod(mods, null, s.lastEnabledModId);
     if (!selected) return null;
