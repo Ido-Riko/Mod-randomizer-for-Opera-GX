@@ -47,6 +47,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function offerReinstall(mod) {
+        if (mod.manualToken !== undefined) {
+            showModMessage(mod, true);
+            showMissedNotificationMessage(mod, () => startManualUninstall({ ...mod, token: mod.manualToken }));
+            return;
+        }
         showModMessage(mod, true);
         showMissedNotificationMessage(mod, () => {
             uninstallFromGesture(mod, error => {
@@ -80,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (msg.action === 'extensionsUpdated') {
             await loadAndRenderProfiles();
             const { pendingNotification: pending } = await storageGet('pendingNotification');
-            if (pending?.uninstallMode) await handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
+            if (pending?.uninstallMode) await handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl, manualToken: pending.manualToken });
             await renderExtensionList();
             await refreshCurrentMod();
             await prepareManual();
@@ -146,7 +151,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const mod = {
                 id: s.pendingNotification.modId,
                 name: s.pendingNotification.modName,
-                reinstallUrl: s.pendingNotification.reinstallUrl
+                reinstallUrl: s.pendingNotification.reinstallUrl,
+                manualToken: s.pendingNotification.manualToken
             };
             offerReinstall(mod);
         }
@@ -373,38 +379,48 @@ document.addEventListener('DOMContentLoaded', () => {
     // Randomize Button
     let redirectTimeoutId = null;
 
+    function startManualUninstall(plan) {
+        if (manualClickInProgress) return;
+        manualClickInProgress = true;
+        els.randomizeButton.disabled = true;
+        let finishedSynchronously = false;
+        // This must be the first API call: no await, storage, or message first.
+        uninstallFromGesture(plan, error => {
+            finishedSynchronously = true;
+            (async () => {
+                try {
+                    if (error) {
+                        await sendMsg('cancelManualRandomization', { token: plan.token });
+                        showError(error.message || 'Uninstall cancelled.');
+                    } else {
+                        await sendMsg('completeManualRandomization', { token: plan.token });
+                        if (!isSidebar) window.close();
+                    }
+                } catch (completionError) {
+                    showError(completionError.message);
+                } finally {
+                    manualClickInProgress = false;
+                    await prepareManual();
+                }
+            })();
+        }, chrome, { openStore: false });
+        // Render only after invoking uninstall, in the same click handler.
+        if (redirectTimeoutId) { clearTimeout(redirectTimeoutId); redirectTimeoutId = null; }
+        offerReinstall({ ...plan, manualToken: plan.token });
+        if (!finishedSynchronously) {
+            sendMsg('beginManualRandomization', { token: plan.token }).catch(error => showError(error.message));
+        }
+    }
+
     els.randomizeButton.addEventListener('click', () => {
         if (els.randomizeButton.disabled || !manualPlan || manualClickInProgress || getRenderLock()) return;
         const plan = manualPlan;
-        manualClickInProgress = true;
-        els.randomizeButton.disabled = true;
         if (plan.reinstallUrl) {
-            let finishedSynchronously = false;
-            // This must be the first API call: no await, storage, or message first.
-            uninstallFromGesture(plan, error => {
-                finishedSynchronously = true;
-                (async () => {
-                    try {
-                        if (error) {
-                            await sendMsg('cancelManualRandomization', { token: plan.token });
-                            showError(error.message || 'Uninstall cancelled.');
-                        } else {
-                            await sendMsg('completeManualRandomization', { token: plan.token });
-                            if (!isSidebar) window.close();
-                        }
-                    } catch (completionError) {
-                        showError(completionError.message);
-                    } finally {
-                        manualClickInProgress = false;
-                        await prepareManual();
-                    }
-                })();
-            }, chrome, { openStore: false });
-            if (!finishedSynchronously) {
-                sendMsg('beginManualRandomization', { token: plan.token }).catch(error => showError(error.message));
-            }
+            startManualUninstall(plan);
             return;
         }
+        manualClickInProgress = true;
+        els.randomizeButton.disabled = true;
         (async () => {
             try {
                 if (redirectTimeoutId) { clearTimeout(redirectTimeoutId); redirectTimeoutId = null; }
@@ -444,7 +460,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (changes.pendingNotification) {
             const pending = changes.pendingNotification.newValue;
-            if (pending?.uninstallMode) handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl });
+            if (pending?.uninstallMode) handleMissedNotification({ id: pending.modId, name: pending.modName, reinstallUrl: pending.reinstallUrl, manualToken: pending.manualToken });
             else hideNotification();
         }
 

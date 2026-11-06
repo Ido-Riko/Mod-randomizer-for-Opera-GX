@@ -20,9 +20,11 @@ Use a disposable browser profile and mods you can reinstall.
 1. Load this directory unpacked through Opera's extensions page with developer mode enabled.
 2. With **Uninstall and reinstall** enabled, wait for **Randomize** to become available.
    Opening the popup must not switch or uninstall a mod. Click **Randomize** once:
-   Opera's uninstall confirmation should appear immediately, without a second button.
+   Opera's uninstall confirmation should appear immediately. After invoking uninstall,
+   the same click also shows the selected-mod message and its **Reinstall** button.
 3. Cancel: the mod remains installed, no store tab opens, and the shuffle draw is not
-   consumed. Click Randomize again to retry. Accept: the correct store page should
+   consumed. The message and Reinstall button remain, including after reopening the
+   popup. Click **Reinstall** (or Randomize again) to retry the same selection. Accept: the correct store page should
    open exactly once after successful removal, even if the popup closes.
 4. Repeat steps 2–3 in the sidebar. On success the sidebar remains open and the next
    candidate becomes available. With reinstall disabled or a missing catalog URL,

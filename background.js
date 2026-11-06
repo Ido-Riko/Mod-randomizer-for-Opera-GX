@@ -445,20 +445,27 @@ async function prepareManualRandomization() {
   await storage.set({ manualPlans: [...retained, plan], manualPlanSequence: plan.token });
   return plan;
 }
+function manualPendingNotification(plan) {
+  return {
+    modId: plan.id, modName: plan.name, reinstallUrl: plan.reinstallUrl,
+    uninstallMode: true, manualToken: plan.token, timestamp: nowMs()
+  };
+}
 async function beginManualRandomization(token) {
   const { manualPlans = [] } = await storage.get('manualPlans');
   const plan = manualPlans.find(plan => plan.token === token);
   if (!plan) return; // A synchronous completion may have already consumed it.
   plan.started = true;
-  await storage.set({ manualPlans });
   await clearPendingNotification();
+  await storage.set({ manualPlans, pendingNotification: manualPendingNotification(plan) });
 }
 async function cancelManualRandomization(token) {
   const { manualPlans = [] } = await storage.get('manualPlans');
   const plan = manualPlans.find(plan => plan.token === token);
   if (plan) {
     delete plan.started;
-    await storage.set({ manualPlans });
+    await clearPendingNotification();
+    await storage.set({ manualPlans, pendingNotification: manualPendingNotification(plan) });
   }
 }
 async function completeManualRandomization(token, uninstalled = true) {
