@@ -16,12 +16,13 @@ The extension is built under **Manifest V3** with the following structure:
 
 ### A. The "Uninstall and Reinstall" Workflow (CRITICAL)
 Due to Opera GX API limitations, simply enabling a mod via `chrome.management.setEnabled()` does not toggle all internal checkmarks of the mod. To solve this, the extension defaults to an "Uninstall and Reinstall" flow:
-1. The worker chooses/enables a mod and stores the pending reinstall target.
-2. Popup/sidebar show a **Reinstall** button. Its click calls `uninstallFromGesture()` synchronously, before any await, message, storage access, or tab creation.
-3. Automatic startup/alarm selection only offers an OS notification. Its click handler decodes the target from the notification ID and calls the same helper synchronously, including after a worker restart.
-4. Native confirmation is always requested. Cancellation/error keeps the pending action and opens no store tab; success opens the reinstall URL and clears the matching pending action.
-5. Catalog lookup uses a bundled fallback, a remote request with a three-second timeout, and retry on a later randomization. Invalid/missing URLs use the enable-only workflow.
-*Rule:* If you modify randomization outputs, you must account for this split workflow (`executeRandomization()` -> `handleUninstallWorkflow()` vs `handleModEnableWorkflow()`).
+1. On popup/sidebar open, `prepareManualRandomization()` reserves a candidate without enabling, uninstalling, or consuming a shuffle draw. Durable `manualPlans` allow the worker to finish after a popup closes or the worker restarts.
+2. **Randomize** calls `uninstallFromGesture()` synchronously from its click, with no preceding await, message, storage access, or tab creation. It then sends `beginManualRandomization` to mark that reservation in flight. There is no second manual Reinstall click.
+3. Successful removal is finalized through either `management.onUninstalled` or the UI callback using the reservation token. Completion is idempotent: it records the draw and opens the store once. Manual calls pass `{ openStore: false }` to the helper because the worker owns store navigation. Cancellation records no draw and preserves the candidate for retry.
+4. Invalid/missing store URLs and reinstall-disabled mode use `enablePreparedManualRandomization`, validating eligibility before enabling the reserved target.
+5. Automatic startup/alarm selection retains the notification/pending **Reinstall** action. Its click handler decodes the target from the notification ID and calls the helper synchronously, including after a worker restart. The helper opens the store on success for these non-manual reservations.
+6. Catalog lookup uses a bundled fallback, a remote request with a three-second timeout, and retry on a later preparation/randomization.
+*Rule:* Manual candidate selection stays in the worker. Invalidate and re-prepare UI candidates after eligibility/settings/selection changes; Randomize stays disabled until ready. Never move uninstall after asynchronous work.
 
 ### B. Grace Period for Uninstalled Mods
 When users use the "Uninstall/Reinstall" flow, the mod temporarily disappears from `chrome.management`.
@@ -47,6 +48,7 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 - `knownDetectedIds` (Array): Tracks mods we have already acknowledged to prevent indiscriminately toggling newly installed mods on across all profiles if "Randomize all mods" is off.
 - `recentlyUninstalled` (Object): Map of `ModID` -> `{ timestamp, name }` for the grace period.
 
+- `manualPlans` / `manualPlanSequence`: Durable, bounded candidate reservations and monotonically increasing tokens for direct manual clicks. Preparation does not count as a switch.
 - `shuffleBags` (Object): Maps JSON-encoded profile/all-mods keys to IDs already drawn this cycle. Only the worker writes it; successful selections consume one draw in either enable or reinstall mode. Renames preserve progress, deletion removes it, and toggling shuffle clears bags.
 
 **Toggle States:**
@@ -59,7 +61,7 @@ All state is stored in `chrome.storage.local`. DO NOT hardcode defaults locally;
 - `toggleRandomizeOnSetTimeChecked` & `randomizeTime` & `timeUnit` (Periodic randomization)
 
 ## 4. Rules for Adding Features
-1. **Never Duplicate Logic:** If you need to trigger a randomization, send a message to `background.js` (`action: 'getRandomMod'`). Do NOT write mod picking logic in the popup.
+1. **Never Duplicate Logic:** Keep mod picking in `background.js`. Manual UI uses `prepareManualRandomization` ahead of the click, then direct synchronous uninstall plus completion, or `enablePreparedManualRandomization` for enable-only mode. `executeRandomization()` owns automatic selection. Do NOT write mod picking logic in the popup.
 2. **Modifying the UI:**
    - Ensure the IDs or classes you add to `popup.html` also go to `sidebar.html`.
    - Add new elements to the `initEls` mapping inside `modules/ui.js` instead of globally querying the document in `popup.js`.

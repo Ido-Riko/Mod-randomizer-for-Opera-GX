@@ -24,7 +24,7 @@ export function environment(options = {}) {
         { id: A, name: 'Alpha', enabled: false, updateUrl: 'https://api.gx.me/store/mods/update' },
         { id: B, name: 'Beta', enabled: false, updateUrl: 'https://api.gx.me/store/mods/update' }
     ]);
-    const calls = { tabs: [], uninstall: [], enabled: [], fetch: [], notifications: [], alarms: [] };
+    const calls = { operations: [], tabs: [], uninstall: [], enabled: [], fetch: [], notifications: [], alarms: [] };
     const timers = new Map(); let timerId = 0;
     const setTimeout = (fn, delay) => { timers.set(++timerId, { fn, delay }); return timerId; };
     const runtime = { onConnect: event(), onMessage: event(), onStartup: event(), onInstalled: event(), getURL: file => 'chrome-extension://test/' + file };
@@ -32,10 +32,12 @@ export function environment(options = {}) {
         runtime,
         storage: { onChanged: event(), local: {
             get(keys, cb) {
+                calls.operations.push("storage.get");
                 const value = Object.fromEntries((Array.isArray(keys) ? keys : [keys]).filter(k => k in data).map(k => [k, clone(data[k])]));
                 if (cb) queueMicrotask(() => cb(value)); else return Promise.resolve(value);
             },
             set(value, cb) {
+                calls.operations.push("storage.set");
                 const changes = {};
                 for (const [key, next] of Object.entries(value)) {
                     if (JSON.stringify(data[key]) !== JSON.stringify(next)) changes[key] = { oldValue: data[key], newValue: clone(next) };
@@ -60,6 +62,7 @@ export function environment(options = {}) {
                 });
             },
             uninstall(id, config, cb) {
+                calls.operations.push("uninstall");
                 calls.uninstall.push({ id, config, cb });
                 if (options.requireGesture && !options.gesture?.()) throw new Error('User gesture required');
             },
@@ -102,3 +105,4 @@ export function element() {
         set innerHTML(value) { this.children = []; }, get innerHTML() { return ''; }
     };
 }
+
